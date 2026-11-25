@@ -143,6 +143,43 @@ def test_native_readback_accepts_measured_clearance_and_source_order(tmp_path: P
     assert all(item["gap_cm"] == pytest.approx(0.20) for item in state["labels"])
 
 
+def test_native_readback_requires_personal_tick_size_and_bold_without_relaxing_geometry(
+    tmp_path: Path,
+) -> None:
+    preparation = prepare_scientific(_source(tmp_path, 4), "heatmap")
+    style = replace(
+        preparation.plot_spec.display_plan.figure_style,
+        page_width_cm=20.0, layer_left_percent=20.0, layer_top_percent=10.0,
+        layer_height_percent=80.0, tick_label_size_pt=26.0,
+        personal_profile={"id": "n4-f-u-v1.1", "overrides": {"bold": True}},
+    )
+    labels = {
+        f"HeatmapRow{i + 1}": _MeasuredLabel(f"Dataset {i + 1:02d}", 150.0, 195.0 + i * 200)
+        for i in range(4)
+    }
+    for label in labels.values():
+        label.properties.update(fsize=26.0, bold=1)
+    arguments = {
+        "layout": preparation.plot_spec.heatmap_layout,
+        "style": style,
+        "geometry": {"left_percent": 20.0, "top_percent": 10.0, "height_percent": 80.0},
+    }
+    state = categorical_renderer.verify_heatmap_row_labels(
+        _ReadbackOrigin(), _ReadbackLayer(labels), **arguments,
+    )
+    assert len(state["labels"]) == 4
+    labels["HeatmapRow1"].properties["bold"] = 0
+    with pytest.raises(RuntimeError, match="font or display contract"):
+        categorical_renderer.verify_heatmap_row_labels(
+            _ReadbackOrigin(), _ReadbackLayer(labels), **arguments,
+        )
+    labels["HeatmapRow1"].properties.update(bold=1, left=999.0)
+    with pytest.raises(RuntimeError):
+        categorical_renderer.verify_heatmap_row_labels(
+            _ReadbackOrigin(), _ReadbackLayer(labels), **arguments,
+        )
+
+
 @pytest.mark.parametrize(
     ("property_name", "bad_value"),
     [("left", 999.0), ("left", float("nan")), ("top", 95.0), ("width", 0.0),

@@ -67,8 +67,8 @@ Codex 账号、组织和数据保留策略约束。医学数据或参考图在�
 在 PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/hang-jin/editaplot.git
-Set-Location editaplot
+git clone https://github.com/hututu001/403orign-exclusive.git
+Set-Location 403orign-exclusive
 .\editaplot.cmd setup
 ```
 
@@ -109,7 +109,7 @@ Pillow 来假装升级成功。完成迁移后先运行 `doctor`；正式绘图�
 也可以把下面这段直接交给 Codex，让它在得到你的确认后完成下载与项目级配置：
 
 ```text
-请从 https://github.com/hang-jin/editaplot 下载完整仓库到一个新文件夹。
+请从 https://github.com/hututu001/403orign-exclusive 下载完整仓库到一个新文件夹。
 不要只复制 skill/editaplot 子目录。阅读 README.md 和 docs/installation.md，
 先复用已有的 64 位 CPython 3.11/3.12；若完全没有兼容版本，请先说明安装官方 Python 3.12
 是系统级变更并等我明确同意。之后在仓库根目录运行 editaplot.cmd setup，Python 包只进入
@@ -410,8 +410,8 @@ burned-in text before they are provided; EditaPlot does not automatically detect
 With Git:
 
 ```powershell
-git clone https://github.com/hang-jin/editaplot.git
-Set-Location editaplot
+git clone https://github.com/hututu001/403orign-exclusive.git
+Set-Location 403orign-exclusive
 .\editaplot.cmd setup
 ```
 

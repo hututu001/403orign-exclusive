@@ -80,3 +80,7 @@ verification*.json
 /docs/semantic_reference_compatibility_upgrade_plan.md
 /tools/build_capability_poster.py
 /tools/build_gallery_index.py
+
+# Source-adjacent local render and smoke evidence.
+/examples/**/*_EditaPlot_*/
+/origin-smoke-*/

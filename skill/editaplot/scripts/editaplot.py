@@ -124,6 +124,10 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--y-title")
     plan_parser.add_argument("--palette-id", help="Freeze a compatible palette from `palettes`")
     plan_parser.add_argument(
+        "--personal-profile", choices=("auto", "none"), default="auto",
+        help="Use the engine's project defaults plus optional local overrides, or none for template defaults",
+    )
+    plan_parser.add_argument(
         "--visual-style-json",
         help="Confirmed exact XPS visual fields (colors, pt width, transparency, page, legend)",
     )
@@ -512,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
                 y_title=args.y_title,
                 palette_id=args.palette_id,
                 visual_style=visual_style,
+                personal_profile=args.personal_profile,
                 mapping=mapping,
                 semantic_confirmation=semantic_confirmation,
                 reference_image=args.reference_image,

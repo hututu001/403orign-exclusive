@@ -42,7 +42,7 @@ from origin_sciplot.shap_layout import (
 from origin_sciplot.template_registry import TemplateManifest
 
 from .base_style_contract import page_size_inches, pt_to_origin_width_units
-from .export_utils import export_graph
+from .export_utils import export_graph, verify_png_export
 from .safe_errors import OriginDrawError
 from .scientific_renderer import (
     _apply_axis_label_font,
@@ -60,6 +60,7 @@ from .scientific_renderer import (
 from .session import OriginSession
 from .verify_utils import (
     LAYER_GEOMETRY_TOLERANCE_PERCENT,
+    apply_personal_typography,
     require_nonempty,
     verify_page_and_layer,
     verify_plot_color,
@@ -3735,11 +3736,17 @@ def _build_origin_graph(
     else:  # pragma: no cover - protected by preparation validation
         raise OriginDrawError(f"Unsupported evidence plot kind: {kind}")
 
+    style = _figure_style(preparation)
+    personal_state = (
+        apply_personal_typography(op, graph, style)
+        if getattr(style, "personal_profile", None) else None
+    )
     output.result_opju.unlink(missing_ok=True)
     if not op.save(str(output.result_opju)):
         raise OriginDrawError("Origin did not save result.opju")
     require_nonempty(output.result_opju)
     return graph, {
+        **({"personal_profile": personal_state} if personal_state is not None else {}),
         **state,
         "template_id": preparation.template_id,
         "plan_digest": preparation.plan_digest,
@@ -3766,13 +3773,17 @@ def run_evidence_template(
             raise OriginDrawError("Origin session was not initialized")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_origin_graph(op, frame, output, resolved)
+        style = _figure_style(resolved)
         exports = export_graph(
             op,
             graph,
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
         )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         if resolved.plot_spec.plot_kind == "event_raster":
             from .event_raster_renderer import _verify_event_y_title

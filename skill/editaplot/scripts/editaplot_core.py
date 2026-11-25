@@ -18,6 +18,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, BinaryIO
 
 try:
@@ -30,6 +31,8 @@ except ImportError:  # pragma: no cover - supported runtime is CPython 3.11-3.12
 
 
 PLAN_VERSION = "1.3"
+PERSONAL_PROFILE_CONFIG_PATH = Path(__file__).resolve().parents[1] / ".editaplot-local.json"
+PROJECT_PROFILE_FILENAME = "personal-profile.json"
 MEDICAL_PANEL_PLAN_VERSION = "1.0"
 AUTO_SCORE_THRESHOLD = 0.84
 AUTO_MARGIN_THRESHOLD = 0.13
@@ -2088,6 +2091,92 @@ def _confirm_semantic_proposal(
         raise EditaPlotError(code, str(exc), **details) from exc
 
 
+def _resolve_personal_profile(root: Path, selection: str) -> dict[str, Any] | None:
+    """Layer portable project defaults with this engine's optional local overrides."""
+    if selection == "none":
+        return None
+    if selection != "auto":
+        raise EditaPlotError("personal_profile_selection_invalid", "Use personal profile auto or none.")
+    from origin_sciplot.scientific_visual import normalize_personal_profile
+
+    profile = None
+    project_path = root / PROJECT_PROFILE_FILENAME
+    if project_path.is_file():
+        try:
+            profile = normalize_personal_profile(json.loads(project_path.read_text(encoding="utf-8-sig")))
+        except (OSError, TypeError, ValueError) as exc:
+            raise EditaPlotError(
+                "personal_profile_invalid", "The project personal profile is invalid."
+            ) from exc
+    if not PERSONAL_PROFILE_CONFIG_PATH.is_file():
+        return profile
+    try:
+        config = json.loads(PERSONAL_PROFILE_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise EditaPlotError(
+            "personal_profile_config_invalid", "The local EditaPlot configuration is invalid."
+        ) from exc
+    if not isinstance(config, dict):
+        raise EditaPlotError(
+            "personal_profile_config_invalid", "The local EditaPlot configuration must be an object."
+        )
+    configured_engine = config.get("engine_home")
+    if (
+        not isinstance(configured_engine, str)
+        or Path(configured_engine).expanduser().resolve() != root.resolve()
+    ):
+        return profile
+    if "personal_profile" not in config:
+        return profile
+    local_profile = config["personal_profile"]
+    if local_profile is None:
+        return None  # Existing explicit local opt-out remains supported.
+    try:
+        local_profile = normalize_personal_profile(local_profile)
+        if profile is None:
+            return local_profile
+        profile = {
+            "id": local_profile["id"],
+            "overrides": {**profile["overrides"], **local_profile["overrides"]},
+        }
+        return normalize_personal_profile(profile)
+    except (TypeError, ValueError) as exc:
+        raise EditaPlotError("personal_profile_invalid", str(exc)) from exc
+
+
+def _validate_personal_profile_contract(contract: Any, final_digest: Any) -> dict[str, Any] | None:
+    if contract is None:
+        return None
+    from origin_sciplot.scientific_visual import normalize_personal_profile, personal_profile_hash
+
+    if not isinstance(contract, dict) or set(contract) != {"id", "overrides", "profile_hash", "report"}:
+        raise EditaPlotError(
+            "personal_profile_contract_invalid", "The frozen personal profile is incomplete."
+        )
+    try:
+        normalized = normalize_personal_profile({"id": contract["id"], "overrides": contract["overrides"]})
+    except (TypeError, ValueError) as exc:
+        raise EditaPlotError("personal_profile_contract_invalid", str(exc)) from exc
+    report = contract["report"]
+    report_payload = dict(report) if isinstance(report, dict) else {}
+    report_hash = report_payload.pop("report_hash", None)
+    if (
+        normalized != {"id": contract["id"], "overrides": contract["overrides"]}
+        or contract["profile_hash"] != personal_profile_hash(normalized)
+        or not isinstance(report, dict)
+        or report.get("id") != normalized["id"]
+        or report.get("overrides") != normalized["overrides"]
+        or not isinstance(report_hash, str)
+        or report_hash != _json_hash(report_payload)
+        or not isinstance(report.get("input_plan_digest"), str)
+        or report.get("output_plan_digest") != final_digest
+    ):
+        raise EditaPlotError(
+            "personal_profile_report_mismatch", "The frozen personal profile does not match the render plan."
+        )
+    return report
+
+
 def build_plan(
     path: str | Path,
     *,
@@ -2100,6 +2189,7 @@ def build_plan(
     y_title: str | None = None,
     palette_id: str | None = None,
     visual_style: dict[str, Any] | None = None,
+    personal_profile: str = "auto",
     mapping: dict[str, Any] | None = None,
     semantic_confirmation: dict[str, Any] | None = None,
     reference_image: str | Path | None = None,
@@ -2113,6 +2203,7 @@ def build_plan(
     if not claim.strip():
         raise EditaPlotError("claim_required", "A one-sentence figure claim is required.")
     root = bootstrap_engine(engine_home)
+    resolved_personal_profile = _resolve_personal_profile(root, personal_profile)
     try:
         from origin_sciplot.origin_backend.template_capabilities import (
             get_template_capability_profile,
@@ -2313,6 +2404,36 @@ def build_plan(
         reference_blocked_reasons.extend(
             str(item) for item in reference_style_report.get("blocking_reasons", [])
         )
+    personal_profile_contract = None
+    if resolved_personal_profile is not None:
+        from origin_sciplot.scientific_visual import apply_personal_profile, personal_profile_hash
+
+        # One-off explicit XPS requests take precedence over equivalent local defaults.
+        explicit_personal_fields = set()
+        if ("page_size_cm" in explicit_visual_tokens
+                or explicit_visual_tokens.get("aspect_ratio_class", "adaptive") != "adaptive"):
+            explicit_personal_fields.update({"page_width_cm", "page_height_cm"})
+        if "legend_position" in explicit_visual_tokens:
+            explicit_personal_fields.add("legend_position")
+        if explicit_personal_fields:
+            resolved_personal_profile = {
+                **resolved_personal_profile,
+                "overrides": {
+                    key: value for key, value in resolved_personal_profile["overrides"].items()
+                    if key not in explicit_personal_fields
+                },
+            }
+        try:
+            frozen_payload, personal_report = apply_personal_profile(
+                frozen_payload, resolved_personal_profile
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditaPlotError("personal_profile_invalid", str(exc)) from exc
+        personal_profile_contract = {
+            **resolved_personal_profile,
+            "profile_hash": personal_profile_hash(resolved_personal_profile),
+            "report": personal_report,
+        }
     plan: dict[str, Any] = {
         "plan_version": PLAN_VERSION,
         "product": "EditaPlot",
@@ -2384,6 +2505,8 @@ def build_plan(
             + reference_blocked_reasons
         ),
     }
+    if personal_profile_contract is not None:
+        plan["figure_contract"]["personal_profile"] = personal_profile_contract
     plan["plan_hash"] = _json_hash(plan)
     return plan
 
@@ -2440,6 +2563,14 @@ def validate_plan(plan: dict[str, Any]) -> None:
     )
     reference_adaptation = plan.get("reference_adaptation")
     reference_style = plan.get("reference_style")
+    personal_report = _validate_personal_profile_contract(
+        plan.get("figure_contract", {}).get("personal_profile"),
+        plan.get("template", {}).get("plan_digest"),
+    )
+    preceding_digest = (
+        personal_report["input_plan_digest"] if personal_report is not None
+        else plan.get("template", {}).get("plan_digest")
+    )
     visual_style = plan.get("figure_contract", {}).get("visual_style")
     if isinstance(visual_style, dict) and visual_style.get("tokens"):
         visual_report = visual_style.get("report")
@@ -2453,7 +2584,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
         expected_output_digest = (
             reference_style.get("input_plan_digest")
             if isinstance(reference_style, dict)
-            else plan.get("template", {}).get("plan_digest")
+            else preceding_digest
         )
         if (
             not isinstance(report_hash, str)
@@ -2480,7 +2611,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
             not isinstance(reference_report_hash, str)
             or reference_report_hash != _json_hash(reference_report_payload)
             or reference_style.get("reference_plan_hash") != reference_adaptation.get("plan_hash")
-            or reference_style.get("output_plan_digest") != plan.get("template", {}).get("plan_digest")
+            or reference_style.get("output_plan_digest") != preceding_digest
         ):
             raise EditaPlotError(
                 "reference_style_report_mismatch",
@@ -2539,6 +2670,11 @@ def build_worker_command(
     if isinstance(palette, dict) and palette.get("palette_id"):
         command.extend(("--palette-id", str(palette["palette_id"])))
     visual_style = plan.get("figure_contract", {}).get("visual_style")
+    frozen_personal_profile = plan.get("figure_contract", {}).get("personal_profile")
+    if frozen_personal_profile is not None:
+        command.extend(("--personal-profile-json", json.dumps(
+            frozen_personal_profile, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        )))
     visual_tokens: dict[str, Any] = {}
     if isinstance(visual_style, dict) and isinstance(visual_style.get("tokens"), dict):
         visual_tokens = dict(visual_style["tokens"])
@@ -4082,6 +4218,85 @@ def _font_readback_audit(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _personal_profile_readback_audit(output: Path, report: dict[str, Any]) -> dict[str, Any]:
+    """Bind actual Origin and PNG evidence to the frozen optional profile."""
+    actual = report.get("personal_profile")
+    application = report.get("personal_profile_application")
+    plan_path = output / "render-plan.json"
+    try:
+        plan = load_json(plan_path) if plan_path.is_file() else None
+        frozen = plan.get("figure_contract", {}).get("personal_profile") if plan else None
+        if frozen is None and actual is None and application is None:
+            return {"requested": False, "ok": True}
+        bootstrap_engine()
+        from origin_sciplot.origin_backend.export_utils import verify_png_export
+        from origin_sciplot.origin_backend.verify_utils import PAGE_SIZE_TOLERANCE_CM
+        from origin_sciplot.scientific_visual import normalize_personal_profile, personal_profile_hash
+
+        if not isinstance(actual, dict):
+            raise ValueError("The actual Origin personal-profile readback is missing.")
+        if plan is not None:
+            if frozen is None:
+                raise ValueError("The actual personal profile is absent from the frozen plan.")
+            if plan.get("plan_hash") != _json_hash({k: v for k, v in plan.items() if k != "plan_hash"}):
+                raise ValueError("The output render plan hash does not match its contents.")
+            expected_report = _validate_personal_profile_contract(
+                frozen, plan.get("template", {}).get("plan_digest")
+            )
+            if application != expected_report:
+                raise ValueError("The applied personal profile differs from the frozen plan.")
+            profile = {"id": frozen["id"], "overrides": frozen["overrides"]}
+        else:
+            profile = normalize_personal_profile(
+                {"id": actual.get("id"), "overrides": actual.get("overrides")}
+            )
+        if (
+            actual.get("id") != profile["id"]
+            or actual.get("overrides") != profile["overrides"]
+            or actual.get("profile_hash") != personal_profile_hash(profile)
+            or actual.get("passed") is not True
+            or actual.get("plot_styles_preserved") is not True
+        ):
+            raise ValueError("The actual Origin personal profile does not match the frozen overrides.")
+        overrides = profile["overrides"]
+        if any(
+            key in overrides for key in ("font_family", "axis_title_size_pt", "tick_label_size_pt", "bold")
+        ):
+            if not isinstance(actual.get("axes"), list):
+                raise ValueError("The personal-profile axis readback is missing.")
+        if any(key in overrides for key in ("font_family", "legend_size_pt", "annotation_size_pt", "bold")):
+            if not isinstance(actual.get("texts"), list):
+                raise ValueError("The personal-profile text readback is missing.")
+        page = actual.get("page")
+        if not isinstance(page, dict):
+            raise ValueError("The personal-profile page readback is missing.")
+        dimensions = {}
+        for name in ("width", "height"):
+            measured = float(page[f"{name}_cm"])
+            if not math.isfinite(measured) or measured <= 0:
+                raise ValueError("The native page size readback is invalid.")
+            field = f"page_{name}_cm"
+            expected = float(overrides.get(field, measured))
+            if abs(measured - expected) > PAGE_SIZE_TOLERANCE_CM:
+                raise ValueError(
+                    f"The native page {name} is {measured:g} cm; "
+                    f"the frozen personal profile requires {expected:g} cm."
+                )
+            dimensions[field] = expected
+        png = verify_png_export(
+            output / "result.png", SimpleNamespace(personal_profile=profile, **dimensions)
+        )
+        return {
+            "requested": True,
+            "ok": True,
+            "id": profile["id"],
+            "profile_hash": personal_profile_hash(profile),
+            "png": png,
+        }
+    except (EditaPlotError, OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return {"requested": True, "ok": False, "error": str(exc)}
+
+
 def verify_output(path: str | Path) -> dict[str, Any]:
     output = Path(path).resolve()
     if not output.is_dir():
@@ -4111,6 +4326,7 @@ def verify_output(path: str | Path) -> dict[str, Any]:
         "exports_confirmed": False,
         "source_data_not_modified": False,
         "font_readback": {"ok": False},
+        "personal_profile": {"ok": False},
     }
     report_path = expected["origin_verify_report"]
     if report_path.is_file() and report_path.stat().st_size:
@@ -4129,6 +4345,7 @@ def verify_output(path: str | Path) -> dict[str, Any]:
                     and all(bool(exports.get(name)) for name in ("png", "pdf", "tif")),
                     "source_data_not_modified": report.get("source_data_modified") is False,
                     "font_readback": _font_readback_audit(report),
+                    "personal_profile": _personal_profile_readback_audit(output, report),
                 }
         except (OSError, json.JSONDecodeError):
             readback_valid = False
@@ -4139,6 +4356,7 @@ def verify_output(path: str | Path) -> dict[str, Any]:
         and semantic_checks["exports_confirmed"]
         and semantic_checks["source_data_not_modified"]
         and bool(semantic_checks["font_readback"].get("ok"))
+        and bool(semantic_checks["personal_profile"].get("ok"))
     )
     programmatic_pass = all_nonempty and readback_valid and semantic_pass
     return {

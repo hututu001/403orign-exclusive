@@ -326,6 +326,18 @@ class ScientificPreparation:
 
 def _plot_digest_payload(spec: ScientificPlotSpec) -> dict:
     payload = asdict(spec)
+    # Keep pre-profile plans reproducible: optional metadata must not change
+    # the digest of an unchanged upstream template (including nested layouts).
+    def omit_absent_profile(value):
+        if isinstance(value, dict):
+            if value.get("personal_profile", False) is None:
+                value.pop("personal_profile")
+            for item in value.values():
+                omit_absent_profile(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                omit_absent_profile(item)
+    omit_absent_profile(payload)
     if spec.shap_dashboard is None:
         payload.pop("shap_dashboard")
     if spec.phasor_plan is None:

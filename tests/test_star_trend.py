@@ -163,7 +163,8 @@ def test_source_and_workflow_have_no_identity_collection_route() -> None:
     assert "stargazers_count" in source
     assert all(token not in source for token in forbidden)
     assert all(token not in workflow for token in forbidden)
-    assert 'cron: "17 1 * * *"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "schedule:" not in workflow
     assert "contents: write" in workflow
     assert "tools/build_star_trend.py" in workflow
     assert "--render-only" in workflow

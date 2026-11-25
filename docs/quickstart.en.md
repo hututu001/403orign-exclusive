@@ -8,7 +8,7 @@ type the plotting commands yourself. Give Codex this prompt:
 
 ```text
 Download and keep the complete latest main repository, including runtime, from
-https://github.com/hang-jin/editaplot. Run editaplot.cmd setup and doctor.
+https://github.com/hututu001/403orign-exclusive. Run editaplot.cmd setup and doctor.
 Ask before installing Python; do not install or modify Origin.
 Then use $editaplot to inspect my table read-only, recommend charts, and ask me to confirm before drawing.
 Save editable OPJU, PNG, PDF, TIF and verification results in a new folder beside the original data.

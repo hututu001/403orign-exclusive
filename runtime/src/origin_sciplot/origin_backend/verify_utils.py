@@ -215,6 +215,319 @@ def verify_text_fonts(
     return state
 
 
+def _personal_text_size(name: str, overrides: Mapping[str, Any]) -> float | None:
+    """Classify native axis titles and existing manual tick labels by role."""
+    lower = name.lower()
+    if lower in {"xb", "xt", "yl", "yr", "zl", "zr", "zb", "zt", "zf", "ztitle", "eventytitle",
+                 "shapmeantitle", "shapgrouptitle"}:
+        return overrides.get("axis_title_size_pt")
+    if lower.startswith(("heatmaprow", "eventtrial", "shapfeaturename")):
+        return overrides.get("tick_label_size_pt")
+    if lower == "legend":
+        return overrides.get("legend_size_pt", overrides.get("annotation_size_pt"))
+    return overrides.get("annotation_size_pt")
+
+
+def _personal_read_plot_option(origin: Any, plot: Any, flag: str) -> float:
+    variable = f"__personal_{flag}"
+    if not plot.layer.LT_execute(f"{variable}=NANUM;"):
+        raise RuntimeError(f"Origin personal-profile readback initialization failed: {flag}")
+    return _read_plot_option(origin, plot, f"-{flag}", variable)
+
+
+def _personal_plot_state(origin: Any, graph: Any, *, column_options: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Keep independent line, edge, fill and symbol codes as preservation evidence."""
+    records = []
+    for layer in graph:
+        layer.activate()
+        for plot in layer.plot_list():
+            kind = int(_personal_read_plot_option(origin, plot, "pt"))
+            record: dict[str, Any] = {"range": plot.lt_range(), "type": kind}
+            # Native -pt values are shared with the existing categorical reader.
+            # Error bars have no symbol or data-label properties; missing values
+            # must not become two equal None values and fake preservation.
+            flags = ["s"]
+            if kind in {200, 201, 202, 231, 233, 240}:
+                flags.extend(("c", "w"))
+            if kind in {201, 202}:
+                flags.extend(("cse", "csf", "kf", "k", "z", "kh"))
+            if kind in {203, 207, 213, 215, 216}:
+                flags.extend(("pfb", "pbc", "pbw"))
+            for flag in flags:
+                record[flag] = _personal_read_plot_option(origin, plot, flag)
+            if kind in {203, 207, 213, 215, 216} and column_options:
+                record["column_fill"] = read_column_fill(plot)
+            records.append(record)
+    return records
+
+
+def _personal_remove_inline_bold(text: str) -> str:
+    """Remove only bold grouping, preserving nested scientific text markup."""
+    while (start := text.find(r"\b(")) >= 0:
+        depth, end = 1, start + 3
+        while end < len(text) and depth:
+            depth += (text[end] == "(") - (text[end] == ")")
+            end += 1
+        if depth:
+            raise RuntimeError("Personal profile text has an unbalanced inline bold group.")
+        text = text[:start] + text[start + 3:end - 1] + text[end:]
+    return text
+
+
+def _personal_inline_bold(text: str, enabled: bool) -> str:
+    """Use Origin's native text markup; ordinary labels have no bold scalar."""
+    plain = _personal_remove_inline_bold(text.replace("\r\n", "\n").replace("\r", "\n"))
+    if not enabled:
+        return plain
+    return "\n".join(r"\b(" + line + ")" if line else line for line in plain.split("\n"))
+
+
+def _personal_tick_auto_details(origin: Any, graph: Any, layer_index: int, *, apply: bool) -> dict[str, Any]:
+    """Read real Auto sentinels with Origin C; missing LabTalk props aren't evidence."""
+    import ctypes
+    helper = Path(__file__).with_name("personal_axes.c")
+    short = ctypes.create_unicode_buffer(4096)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(helper), short, len(short)):
+        raise RuntimeError("Origin axis helper path could not be resolved.")
+    origin.lt_exec(f'__ep_axis_compile=run.LoadOC("{short.value}",16);')
+    if origin.lt_float("__ep_axis_compile") != 0:
+        raise RuntimeError("Origin axis detail reader did not compile.")
+    origin.set_lt_str("__ep_axis_graph", graph.name)
+    # Clear every output before calling native code; stale values must fail.
+    origin.lt_exec("".join(f"__ep_axis_{i}_{key}=NA();" for i in range(4)
+                           for key in ("minor_length", "major_width", "minor_width")))
+    origin.lt_exec(f"__ep_axis_details_ok=0;__ep_axis_layer={layer_index};__ep_axis_apply={int(apply)};"
+                   "run -oc editaplot_personal_tick_details;")
+    if origin.lt_float("__ep_axis_details_ok") != 1:
+        raise RuntimeError("Origin axis detail readback failed.")
+    result = {}
+    for i, side in enumerate(("bottom", "top", "left", "right")):
+        result[side] = {}
+        for key in ("minor_length", "major_width", "minor_width"):
+            if origin.lt_float(f"__ep_axis_{i}_{key}") != 1:
+                raise RuntimeError(f"Personal axis {side} {key} is not Auto.")
+            result[side][key] = "auto"
+    return result
+
+
+def apply_personal_axes(origin: Any, graph: Any, style: Any, *, apply: bool = True) -> list[dict[str, Any]]:
+    """Customize only ordinary Cartesian axes; preserve scales and label roles."""
+    from ..scientific_visual import personal_axis_style
+    values = personal_axis_style(style)
+    if not values:
+        return []
+    records = []
+    for index, layer in enumerate(graph):
+        layer.activate()
+        pair_labels = {a: int(_finite_float(origin.lt_float(f"layer.{a}.showLabels"), f"{a}.showLabels"))
+                       for a in ("x", "y")}
+        pair_axes = {a: int(_finite_float(origin.lt_float(f"layer.{a}.showAxes"), f"{a}.showAxes"))
+                     for a in ("x", "y")}
+        if not any(pair_axes.values()):
+            records.append({"layer": index + 1, "applicable": False, "reason": "axis_free_layer"})
+            continue
+        before_scale = {f"{a}.{p}": _finite_float(origin.lt_float(f"layer.{a}.{p}"), f"{a}.{p}")
+                        for a in ("x", "y") for p in ("from", "to", "inc", "type")}
+        expected = {}
+        for a in ("x2", "y2", "x", "y"):
+            enabled = bool(pair_labels[a[0]] & (2 if a.endswith("2") else 1))
+            if "frame_line_width_pt" in values:
+                expected[f"{a}.thickness"] = values["frame_line_width_pt"]
+            if "axis_color" in values:
+                expected[f"{a}.color"] = 1  # documented LabTalk black
+            if "major_tick_length_pt" in values:
+                expected[f"{a}.ticklength"] = values["major_tick_length_pt"]
+            if "tick_direction" in values:
+                expected[f"{a}.ticks"] = (10 if values["tick_direction"] == "out" else 5) if enabled else 0
+            if a in ("x", "y"):
+                if "axis_frame" in values:
+                    expected[f"{a}.showAxes"] = 3
+                    expected[f"{a}.showGrids"] = 0
+                # Category/text axes and logarithmic subdivisions inherit their
+                # scientific meaning. Only linear numeric visible axes change.
+                if "numeric_minor_ticks" in values and enabled:
+                    label_type = int(origin.lt_float(f"layer.{a}.label.type"))
+                    scale_type = int(before_scale[f"{a}.type"])
+                    if label_type == 1 and scale_type in (0, 1):
+                        expected[f"{a}.minorTicks"] = values["numeric_minor_ticks"]
+        if apply:
+            for key, value in expected.items():
+                if not layer.obj.LT_execute(f"layer.{key}={value:g};"):
+                    raise RuntimeError(f"Origin personal axis write failed: {key}")
+        details = (_personal_tick_auto_details(origin, graph, index, apply=apply)
+                   if values.get("tick_details") == "auto" else {})
+        layer.activate()
+        actual = {key: _finite_float(origin.lt_float(f"layer.{key}"), key) for key in expected}
+        for key, value in expected.items():
+            if abs(actual[key] - value) > 0.05:
+                raise RuntimeError(f"Personal axis readback mismatch: {key}={actual[key]}, expected {value}.")
+        if any(origin.lt_float(f"layer.{key}") != value for key, value in before_scale.items()):
+            raise RuntimeError("Personal axis styling changed a source scale.")
+        if any(int(origin.lt_float(f"layer.{a}.showLabels")) != value for a, value in pair_labels.items()):
+            raise RuntimeError("Personal axis styling changed axis label visibility.")
+        records.append({"layer": index + 1, "applicable": True, "properties": actual,
+                        "tick_details": details, "scales_preserved": True,
+                        "label_visibility_preserved": True})
+    return records
+
+
+def apply_personal_typography(origin: Any, graph: Any, style: Any, *, apply: bool = True) -> dict[str, Any]:
+    """Apply/read only the frozen typography; retain template marks and visibility.
+
+    Reuses native graph objects, font lookup, page readback and plot-option reads.
+    ``apply=False`` is the independent saved-OPJU verification path.
+    """
+    from ..scientific_visual import normalize_personal_profile, personal_profile_hash, personal_bar_style
+
+    if not getattr(style, "personal_profile", None):
+        return {}
+    profile = normalize_personal_profile(style.personal_profile)
+    values = profile["overrides"]
+    font = (int(round(origin.lt_float(f"font({values['font_family']})")))
+            if "font_family" in values else None)
+    if font is not None and font <= 0:
+        raise RuntimeError("The personal profile font is not available in Origin.")
+    column_options = personal_bar_style(style)
+    original_marks = _personal_plot_state(origin, graph, column_options=column_options)
+    axis_styles = apply_personal_axes(origin, graph, style, apply=apply)
+    page = read_page_geometry_cm(origin, graph)
+    for prop, key in (("width_cm", "page_width_cm"), ("height_cm", "page_height_cm")):
+        if key in values and abs(page[prop] - values[key]) > PAGE_SIZE_TOLERANCE_CM:
+            raise RuntimeError(f"Personal profile native page {prop} readback failed.")
+    axes, texts, plot_labels, color_scales = [], [], [], []
+    visibility_checks: list[tuple[Any, float]] = []
+    for layer_index, layer in enumerate(graph, 1):
+        layer.activate()
+        pair_visibility = {axis: _finite_float(origin.lt_float(f"layer.{axis}.showLabels"), f"{axis}.showLabels")
+                           for axis in ("x", "y")}
+        for axis in ("x", "y", "x2", "y2", "z"):
+            # showLabels is a shared pair bitmask (1 bottom/left, 2 top/right).
+            if axis == "z":
+                visible = float(origin.lt_float("layer.z.showLabels"))
+                if not math.isfinite(visible):  # No Z axis on ordinary 2D graphs.
+                    continue
+            else:
+                visible = int(pair_visibility[axis[0]]) & (2 if axis.endswith("2") else 1)
+            if visible <= 0:
+                continue
+            expected = {}
+            if font is not None:
+                expected["font"] = font
+            if "tick_label_size_pt" in values:
+                expected["pt"] = values["tick_label_size_pt"]
+            if "bold" in values:
+                expected["bold"] = int(values["bold"])
+            if apply:
+                for prop, value in expected.items():
+                    layer.set_float(f"{axis}.label.{prop}", value)
+            actual = {prop: float(layer.get_float(f"{axis}.label.{prop}")) for prop in expected}
+            if any(not math.isfinite(actual[k]) or abs(actual[k] - v) > 0.05 for k, v in expected.items()):
+                raise RuntimeError(f"Personal profile {axis} tick typography readback failed.")
+            axes.append({"layer": layer_index, "axis": axis, **actual})
+        for native in layer.obj.GraphObjects:
+            if native.GetObjectType() not in (2, 3):  # Origin native text and legend.
+                continue
+            visible = _finite_float(native.GetShow(), "GraphObject.Show")
+            visibility_checks.append((native, visible))
+            if not visible or not native.GetText():
+                continue
+            name = native.GetName()
+            label = layer.label(name)
+            original_text = str(label.text)
+            size = _personal_text_size(name, values)
+            expected = {}
+            if size is not None:
+                expected["fsize"] = float(size)
+            if font is not None:
+                expected["font"] = font
+            if apply:
+                # Normalize only presentation overrides; preserve chemical
+                # subscripts/superscripts, plot legend samples and substitutions.
+                text = re.sub(r"\\p[0-9]+(?:\.[0-9]+)?\(", r"\\p100(", original_text) if size is not None else original_text
+                if font is not None:
+                    text = re.sub(r"\\f:[^()]+\(", lambda _: f"\\f:{values['font_family']}(", text)
+                if "bold" in values:
+                    text = _personal_inline_bold(text, values["bold"])
+                if text != original_text:
+                    label.text = text
+                for prop, value in expected.items():
+                    label.set_float(prop, value)
+            actual = {prop: float(label.get_float(prop)) for prop in expected}
+            if any(not math.isfinite(actual[k]) or abs(actual[k] - v) > 0.05 for k, v in expected.items()):
+                raise RuntimeError(f"Personal profile text {name} typography readback failed: actual={actual}, expected={expected}.")
+            text = str(label.text)
+            if size is not None and any(float(p) != 100 for p in re.findall(r"\\p([0-9]+(?:\.[0-9]+)?)\(", text)):
+                raise RuntimeError(f"Personal profile text {name} retains a conflicting inline size.")
+            if "bold" in values:
+                normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+                canonical_text = _personal_inline_bold(normalized_text, values["bold"])
+                if normalized_text != canonical_text:
+                    raise RuntimeError(
+                        f"Personal profile text {name} has conflicting inline bold: "
+                        f"actual={normalized_text[:240]!r}, canonical={canonical_text[:240]!r}."
+                    )
+                actual["bold"] = int(values["bold"])
+                actual["bold_source"] = "inline_markup"
+            if font is not None and any(f != values["font_family"] for f in re.findall(r"\\f:([^()]+)\(", text)):
+                raise RuntimeError(f"Personal profile text {name} retains a conflicting inline font.")
+            texts.append({"layer": layer_index, "name": name, "text": text, **actual})
+        for plot_index, plot in enumerate(layer.plot_list(), 1):
+            # Changing label typography does not turn hidden labels on.
+            kind = int(_personal_read_plot_option(origin, plot, "pt"))
+            if kind in (231, 233):
+                plot_labels.append({"layer": layer_index, "plot": plot_index, "type": kind,
+                                    "applicable": False, "reason": "error_bar"})
+                continue
+            expected = {}
+            if "annotation_size_pt" in values:
+                expected["qs"] = values["annotation_size_pt"]
+            if font is not None:
+                expected["qf"] = font
+            if "bold" in values:
+                expected["qb"] = int(values["bold"])
+            actual = {}
+            for flag, value in expected.items():
+                if apply:
+                    plot.set_cmd(f"-{flag} {value:g}")
+                measured = _personal_read_plot_option(origin, plot, flag)
+                if abs(measured - value) > 0.05:
+                    raise RuntimeError(f"Personal profile plot-label {flag} readback failed.")
+                actual[flag] = measured
+            plot_labels.append({"layer": layer_index, "plot": plot_index, **actual})
+        for native in layer.obj.GraphObjects:
+            name = native.GetName()
+            if not name.lower().startswith("spectrum"):
+                continue
+            visible = _finite_float(native.GetShow(), "GraphObject.Show")
+            visibility_checks.append((native, visible))
+            if not visible:
+                continue
+            expected = {}
+            if "annotation_size_pt" in values:
+                expected["fsize"] = values["annotation_size_pt"]
+            if font is not None:
+                expected["font"] = font
+            if "bold" in values:
+                expected["bold"] = int(values["bold"])
+            if apply:
+                origin.lt_exec("".join(f"{name}.labels.{k}={v:g};" for k, v in expected.items()))
+            actual = {k: float(origin.lt_float(f"{name}.labels.{k}")) for k in expected}
+            if any(not math.isfinite(actual[k]) or abs(actual[k] - v) > 0.05 for k, v in expected.items()):
+                raise RuntimeError("Personal profile color-scale typography readback failed.")
+            color_scales.append({"layer": layer_index, "name": name, **actual})
+    origin.lt_exec("doc -uw;")
+    if any(_finite_float(native.GetShow(), "GraphObject.Show") != visible for native, visible in visibility_checks):
+        raise RuntimeError("Personal typography changed text-object visibility.")
+    if original_marks != _personal_plot_state(origin, graph, column_options=column_options):
+        raise RuntimeError("Personal typography changed a template line, symbol, edge or fill style.")
+    return {
+        "id": profile["id"], "profile_hash": personal_profile_hash(profile), "overrides": values,
+        "page": page, "axes": axes, "axis_styles": axis_styles, "texts": texts, "plot_labels": plot_labels,
+        "color_scales": color_scales, "plot_styles": original_marks,
+        "plot_styles_preserved": True, "passed": True,
+    }
+
+
 def _read_plot_option(op: Any, plot: Any, option: str, variable_name: str) -> float:
     command = f"{{range rr={plot.lt_range()};get rr {option} {variable_name};}}"
     result = plot.layer.LT_execute(command)
@@ -270,33 +583,94 @@ def verify_plot_color(
     }
 
 
-def apply_column_style(op: Any, plot: Any, color: str, *, border_width_pt: float) -> None:
+def _column_object(plot: Any) -> Any:
+    if isinstance(plot, NativePlotReference):
+        return list(plot.layer.DataPlots)[plot.native_index - 1]
+    return plot.obj
+
+
+def read_column_fill(plot: Any) -> dict[str, float]:
+    """Read named scalar theme fields; never deserialize native color-list blobs."""
+    native = _column_object(plot)
+    theme = native.GetTheme()
+    pattern = theme.Pattern
+    fill = pattern.Fill
+    fields = {
+        "primary_color": fill.FillColor,
+        "shading_mode": fill.ShadingMode,
+        "pattern": fill.Pattern.Style,
+        "border_color": pattern.Border.Color,
+        "transparency_percent": pattern.Transparency,
+    }
+    mode = int(fill.ShadingMode.GetIntValue())
+    if mode == 2:  # Native theme is zero-based; LabTalk -pfm is one-based.
+        fields.update({
+            "secondary_color": fill.GradColor,
+            "direction": fill.GradDirection,
+            "secondary_transparency_auto": fill.Auto,
+            "secondary_transparency_percent": fill.PtnBkColor2Trans,
+        })
+    return {key: _finite_float(node.GetDoubleValue(), key) for key, node in fields.items()}
+
+
+def apply_column_style(op: Any, plot: Any, color: str, *, border_width_pt: float, style: Any = None) -> None:
     """Set the documented column fill, border and point-sized border width."""
     if not math.isfinite(border_width_pt) or border_width_pt <= 0:
         raise ValueError("Column border width must be a positive point value")
     code = int(op.ocolor(color))
+    from ..scientific_visual import column_highlight_color, personal_bar_style
+
+    options = personal_bar_style(style) if style is not None else {}
     plot.set_cmd(f"-pfb {code}")
-    plot.set_cmd(f"-pbc {code}")
+    plot.set_cmd(f"-pbc {-4 if options.get('bar_border') == 'none' else code}")
     plot.set_cmd(f"-vw {border_width_pt:g}")
+    if options.get("bar_fill") == "two_color_center":
+        plot.set_cmd("-pfm 3")
+        plot.set_cmd("-pfp 0")
+        plot.set_cmd(f"-pff {int(op.ocolor(column_highlight_color(color)))}")
+        native = _column_object(plot)
+        theme = native.GetTheme()
+        theme.Pattern.Fill.GradDirection.SetIntValue(9)
+        theme.Pattern.Fill.Auto.SetIntValue(1)
+        theme.Pattern.Fill.PtnBkColor2Trans.SetDoubleValue(style.fill_transparency_percent)
+        native.PutTheme(theme)
 
 
 def verify_column_colors(
-    op: Any, plot: Any, expected_html: str, *, variable_name: str
-) -> dict[str, float | str]:
+    op: Any, plot: Any, expected_html: str, *, variable_name: str, style: Any = None,
+) -> dict[str, Any]:
     """Read the column fill and border independently; -c is a line property."""
     expected = int(op.ocolor(expected_html))
+    from ..scientific_visual import column_highlight_color, personal_bar_style
+
+    options = personal_bar_style(style) if style is not None else {}
+    expected_border = -4 if options.get("bar_border") == "none" else expected
     fill = _read_plot_option(op, plot, "-pfb", f"{variable_name}_fill")
     border = _read_plot_option(op, plot, "-pbc", f"{variable_name}_border")
-    if int(fill) != expected or int(border) != expected:
+    if int(fill) != expected or int(border) != expected_border:
         raise RuntimeError(
             f"Origin column color verification failed: fill={fill:g}, border={border:g}, "
             f"expected {expected} for {expected_html}"
         )
-    return {"html": expected_html, "fill_origin_color_code": fill, "border_origin_color_code": border}
+    result = {"html": expected_html, "fill_origin_color_code": fill, "border_origin_color_code": border}
+    if options.get("bar_fill") == "two_color_center":
+        actual = read_column_fill(plot)
+        highlight = column_highlight_color(expected_html)
+        expected_fields = {
+            "primary_color": expected, "secondary_color": int(op.ocolor(highlight)),
+            "shading_mode": 2, "direction": 9, "pattern": 0,
+            "border_color": expected_border, "transparency_percent": style.fill_transparency_percent,
+            "secondary_transparency_auto": 1,
+            "secondary_transparency_percent": style.fill_transparency_percent,
+        }
+        if any(abs(actual.get(key, math.inf) - value) > 0.05 for key, value in expected_fields.items()):
+            raise RuntimeError(f"Origin column gradient verification failed: {actual}, expected {expected_fields}")
+        result.update({"secondary_html": highlight, "gradient": actual})
+    return result
 
 
 def verify_column_border_widths(
-    op: Any, plots: Mapping[str, Any], expected_points: float
+    op: Any, plots: Mapping[str, Any], expected_points: float, *, style: Any = None,
 ) -> dict[str, dict[str, float]]:
     """Measure native read units and restore the frozen point width.
 
@@ -304,6 +678,16 @@ def verify_column_border_widths(
     -pbw as pt*500, whereas 10.15 returns points. Calibrate on the owned plot
     instead of mistaking a 500-times-too-wide border for another unit encoding.
     """
+    from ..scientific_visual import personal_bar_style
+
+    if style is not None and personal_bar_style(style).get("bar_border") == "none":
+        result = {}
+        for index, (name, plot) in enumerate(plots.items()):
+            color = _read_plot_option(op, plot, "-pbc", f"__column_none_{index}")
+            if color != -4:
+                raise RuntimeError(f"Origin column {name} retains a visible border.")
+            result[name] = {"visible": False, "border_color_origin_code": color}
+        return result
     if not math.isfinite(expected_points) or expected_points <= 0:
         raise ValueError("Column border width must be a positive point value")
     state: dict[str, dict[str, float]] = {}

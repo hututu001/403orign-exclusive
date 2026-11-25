@@ -16,10 +16,11 @@ from origin_sciplot.origin_backend.base_style_contract import (
     page_size_inches,
     pt_to_origin_width_units,
 )
-from origin_sciplot.origin_backend.export_utils import export_graph
+from origin_sciplot.origin_backend.export_utils import export_graph, verify_png_export
 from origin_sciplot.origin_backend.safe_errors import OriginDrawError
 from origin_sciplot.origin_backend.session import OriginSession
 from origin_sciplot.origin_backend.verify_utils import (
+    apply_personal_typography,
     require_nonempty,
     verify_page_and_layer,
     verify_plot_color,
@@ -705,6 +706,9 @@ def _style_legend(
         legend.set_float("left", layer_right + page_width * 0.02)
         legend.set_float("top", page_height * 0.08)
         op.lt_exec("doc -uw;")
+    elif getattr(style, "personal_profile", None):
+        from origin_sciplot.origin_backend.scientific_renderer import _position_publication_legend
+        _position_publication_legend(op, layer, legend, style, expected_frame=int(visual.legend_frame))
     visible_readback = int(legend.get_int("show")) != 0
     showframe = int(legend.get_int("showframe"))
     if not visible_readback or showframe != int(visual.legend_frame):
@@ -977,6 +981,10 @@ def _build_origin_graph(
     x_title.set_int("show", 1)
     y_title.set_int("show", 1)
     op.lt_exec("doc -uw;")
+    personal_state = (
+        apply_personal_typography(op, graph, style)
+        if getattr(style, "personal_profile", None) else None
+    )
     _position_axis_titles(op, x_title, y_title, style)
     op.lt_exec("doc -uw;")
     title_position = _axis_title_geometry(op, x_title, y_title)
@@ -1023,6 +1031,7 @@ def _build_origin_graph(
 
     geometry_report.update(
         {
+            **({"personal_profile": personal_state} if personal_state is not None else {}),
             "xps_profile": profile.to_dict(),
             "xps_axis_plan": axis_plan.to_dict(),
             "xps_plan_digest": preparation.plan_digest,
@@ -1082,13 +1091,17 @@ def run(
             raise OriginDrawError("Origin session was not initialized")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_origin_graph(op, frame, output, preparation)
+        style = preparation.visual_contract.figure_style
         exports = export_graph(
             op,
             graph,
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
         )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         write_json(
             output.environment_report,

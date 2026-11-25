@@ -1,8 +1,6 @@
 name: anonymous aggregate Star trend
 
 on:
-  schedule:
-    - cron: "17 1 * * *"
   workflow_dispatch:
 
 permissions:

@@ -6,7 +6,7 @@
 不用先学 Git，也不用自己逐条输入绘图命令。把下面这段话交给 Codex：
 
 ```text
-请从 https://github.com/hang-jin/editaplot 的最新 main 下载并保留完整仓库（含 runtime），
+请从 https://github.com/hututu001/403orign-exclusive 的最新 main 下载并保留完整仓库（含 runtime），
 运行 editaplot.cmd setup 和 doctor。需要安装 Python 时先征得我的同意，不要安装或修改 Origin。
 环境检查通过后，请用 $editaplot 只读理解我提供的表格，推荐图形并让我确认，再调用 Origin 绘图。
 请把可编辑 OPJU、PNG、PDF、TIF 和检查结果保存在原始数据旁的新文件夹中。

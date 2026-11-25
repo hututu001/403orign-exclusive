@@ -1,0 +1,25 @@
+{
+  "id": "n4-f-u-v1.2",
+  "overrides": {
+    "annotation_size_pt": 24,
+    "axis_color": "#000000",
+    "axis_frame": "four_sides",
+    "axis_title_size_pt": 28,
+    "bar_border": "none",
+    "bar_fill": "two_color_center",
+    "bar_fill_transparency_percent": 10,
+    "bold": true,
+    "font_family": "Arial",
+    "frame_line_width_pt": 3,
+    "legend_position": "inside",
+    "legend_size_pt": 24,
+    "major_tick_length_pt": 8,
+    "numeric_minor_ticks": 1,
+    "page_height_cm": 20.14728,
+    "page_width_cm": 28.8544,
+    "png_dpi": 600,
+    "tick_details": "auto",
+    "tick_direction": "out",
+    "tick_label_size_pt": 26
+  }
+}

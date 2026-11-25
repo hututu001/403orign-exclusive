@@ -24,6 +24,8 @@ from origin_sciplot.output_manager import RunOutput, write_json
 from origin_sciplot.scientific_visual import (
     AdaptiveOriginStyle,
     interpolate_hex_colors,
+    column_highlight_color,
+    personal_bar_style,
     palette_colors,
     signed_effect_colors,
 )
@@ -31,7 +33,7 @@ from origin_sciplot.scientific_workflow import ScientificPreparation, prepare_sc
 from origin_sciplot.template_registry import TemplateManifest
 
 from .base_style_contract import page_size_inches, pt_to_origin_width_units
-from .export_utils import export_graph
+from .export_utils import export_graph, verify_png_export
 from .heatmap_labels import add_heatmap_row_labels, verify_heatmap_row_labels
 from .safe_errors import OriginDrawError
 from .scientific_renderer import (
@@ -59,6 +61,7 @@ from .verify_utils import (
     NativePlotReference,
     _read_plot_option,
     apply_column_style,
+    apply_personal_typography,
     read_layer_geometry_percent,
     require_nonempty,
     verify_column_border_widths,
@@ -608,7 +611,7 @@ def _build_bar_graph(
     main_plots: dict[str, Any] = {}
     error_plots: dict[str, Any] = {}
     for plan, plot in zip(plans, value_plots, strict=True):
-        apply_column_style(op, plot, plan.color, border_width_pt=style.bar_border_width_pt)
+        apply_column_style(op, plot, plan.color, border_width_pt=style.bar_border_width_pt, style=style)
         plot.set_cmd("-vg 20")
         main_plots[plan.label] = plot
 
@@ -648,11 +651,18 @@ def _build_bar_graph(
         plot = value_plots[0]
         commands = [f"range __horizontal_bar={plot.lt_range()};"]
         expected_codes: list[float] = []
+        highlight_codes: list[float] = []
+        gradient = personal_bar_style(style).get("bar_fill") == "two_color_center"
         for row, color in enumerate(colors, start=1):
             code = float(op.ocolor(color))
             expected_codes.append(code)
             commands.append(f"set __horizontal_bar {row} -pfb {int(code)};")
             commands.append(f"get __horizontal_bar {row} -pfb __horizontal_fill{row};")
+            if gradient:
+                highlight_code = int(op.ocolor(column_highlight_color(color)))
+                highlight_codes.append(highlight_code)
+                commands.append(f"set __horizontal_bar {row} -pff {highlight_code};")
+                commands.append(f"get __horizontal_bar {row} -pff __horizontal_highlight{row};")
         commands.append("doc -uw;")
         if not layer.obj.LT_execute("".join(commands)):
             raise OriginDrawError("Origin could not apply the horizontal ablation color ramp.")
@@ -667,6 +677,16 @@ def _build_bar_graph(
             "hex": list(colors),
             "origin_codes": actual_codes,
         }
+        if gradient:
+            actual_highlights = [
+                float(op.lt_float(f"__horizontal_highlight{row}")) for row in range(1, len(colors) + 1)
+            ]
+            if actual_highlights != highlight_codes:
+                raise OriginDrawError("Origin horizontal bar highlights differ from their point colors.")
+            point_fill_state.update({
+                "secondary_hex": [column_highlight_color(color) for color in colors],
+                "secondary_origin_codes": actual_highlights,
+            })
 
     if spec.plot_kind == "stacked_bar" and spec.aggregate_error_column:
         total_column = plot_sheet.lt_col_index("__StackTotal")
@@ -769,10 +789,10 @@ def _build_bar_graph(
     try:
         text_state = verify_text_sizes(labels_for_verify, expected_text)
         font_state = verify_text_fonts(op, labels_for_verify, style.font_family)
-        line_state = verify_column_border_widths(op, main_plots, style.bar_border_width_pt)
+        line_state = verify_column_border_widths(op, main_plots, style.bar_border_width_pt, style=style)
         color_state = {
             plan.label: verify_column_colors(
-                op, main_plots[plan.label], plan.color, variable_name=f"__cat_color_{index}"
+                op, main_plots[plan.label], plan.color, variable_name=f"__cat_color_{index}", style=style,
             )
             for index, plan in enumerate(plans)
         }
@@ -1507,6 +1527,9 @@ def run_categorical_template(
             raise OriginDrawError("Origin session was not initialized")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_origin_graph(op, frame, resolved)
+        style = _figure_style(resolved)
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"] = apply_personal_typography(op, graph, style)
         output.result_opju.unlink(missing_ok=True)
         if not op.save(str(output.result_opju)):
             raise OriginDrawError("Origin did not save result.opju")
@@ -1517,6 +1540,7 @@ def run_categorical_template(
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
         )
         if resolved.template_id == "heatmap":
             # Export/save can refresh axis-owned objects: verify the actual final state again.
@@ -1525,6 +1549,8 @@ def run_categorical_template(
             verify_report["origin_text_state"]["row_labels_after_export"] = verify_heatmap_row_labels(
                 op, graph[0], layout=resolved.plot_spec.heatmap_layout, style=style, geometry=geometry,
             )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         write_json(output.origin_verify_report, verify_report)
         write_json(

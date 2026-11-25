@@ -29,12 +29,13 @@ from origin_sciplot.scientific_workflow import (
 from origin_sciplot.template_registry import TemplateManifest
 
 from .base_style_contract import FIXED_ORIGIN_STYLE, page_size_inches, pt_to_origin_width_units
-from .export_utils import export_graph
+from .export_utils import export_graph, verify_png_export
 from .safe_errors import OriginDrawError
 from .session import OriginSession
 from .verify_utils import (
     NativePlotReference,
     apply_column_style,
+    apply_personal_typography,
     read_layer_geometry_percent,
     require_nonempty,
     verify_column_border_widths,
@@ -781,20 +782,32 @@ def _position_x_title(
         x_title_upshift_page_percent=FIXED_ORIGIN_STYLE.x_title_upshift_page_percent,
     )
     page_height = float(op.lt_float("page.height"))
+    from ..scientific_visual import personal_axis_style
+    if personal_axis_style(resolved).get("tick_direction") == "out":
+        # Outward ticks and large personal tick text occupy the lower margin.
+        # Keep the title within that existing margin, below the tick labels,
+        # without shrinking type or changing the plot area's percentages.
+        label.set_float("top", page_height * 0.99 - label.get_float("height"))
+        return
     label.set_float(
         "top",
         label.get_float("top") - page_height * resolved.x_title_upshift_page_percent / 100.0,
     )
 
 
-def _position_rotated_category_title(op: Any, label: Any) -> None:
+def _position_rotated_category_title(
+    op: Any, label: Any, style: AdaptiveOriginStyle | None = None,
+) -> None:
     """Place the X title below 45-degree category tick labels."""
     if label is None:
         raise OriginDrawError("Origin category-axis title is missing.")
     label.set_int("attach", 1)
     page_width = float(op.lt_float("page.width"))
     page_height = float(op.lt_float("page.height"))
-    layer_center = page_width * 0.61005
+    layer_center = page_width * (
+        (style.layer_left_percent + style.layer_width_percent / 2) / 100
+        if style is not None else 0.61005
+    )
     label.set_float("left", layer_center - label.get_float("width") / 2.0)
     label.set_float("top", page_height * 0.90)
     op.lt_exec("doc -uw;")
@@ -837,20 +850,27 @@ def _add_plot(
     series: OriginSeriesPlan,
     x_column: str,
     style: AdaptiveOriginStyle,
+    *, native_xy_series: bool = False,
 ) -> tuple[Any, list[Any]]:
-    before = {plot.lt_range() for plot in layer.plot_list()}
-    plot = layer.add_plot(
-        worksheet,
-        series.plot_column,
-        x_column,
-        type=series.plot_type,
-        colyerr=series.error_column if series.error_column else -1,
-    )
+    if native_xy_series:
+        plot, error_plots = _add_native_xy_series(op, layer, worksheet, series, x_column)
+    else:
+        before = {plot.lt_range() for plot in layer.plot_list()}
+        plot = layer.add_plot(
+            worksheet,
+            series.plot_column,
+            x_column,
+            type=series.plot_type,
+            colyerr=series.error_column if series.error_column else -1,
+        )
     if plot is None:
         raise OriginDrawError(f"Origin could not add plot: {series.source_column}")
-    plot.color = series.color
+    if native_xy_series:
+        plot.set_cmd(f"-c {op.ocolor(series.color)}")
+    else:
+        plot.color = series.color
     if series.plot_type == "c":
-        apply_column_style(op, plot, series.color, border_width_pt=style.bar_border_width_pt)
+        apply_column_style(op, plot, series.color, border_width_pt=style.bar_border_width_pt, style=style)
         if series.bar_gap_percent is not None:
             # Official LabTalk set option: -vg sets the column/bar gap percentage.
             plot.set_cmd(f"-vg {series.bar_gap_percent:g}")
@@ -859,24 +879,115 @@ def _add_plot(
         if series.plot_type in {"l", "y"}:
             plot.set_cmd(f"-d {series.line_style}")
     if series.plot_type in {"s", "y"}:
-        plot.symbol_kind = series.symbol_kind or 2
+        if native_xy_series:
+            plot.set_cmd(f"-k {series.symbol_kind or 2}")
+        else:
+            plot.symbol_kind = series.symbol_kind or 2
         if not series.is_phase_tick:
             plot.set_cmd("-kf 1")
-        plot.symbol_size = series.marker_size_pt
+        if native_xy_series:
+            plot.set_cmd(f"-z {series.marker_size_pt:g}")
+        else:
+            plot.symbol_size = series.marker_size_pt
         if not series.is_phase_tick:
             plot.set_cmd(f"-kh {MARKER_EDGE_PERCENT:g}")
     if series.axis == "right":
         # Official LabTalk set command: -ay assigns a data plot to Y axis 2.
         plot.set_cmd("-ay 2")
     if series.transparency_percent:
-        plot.transparency = series.transparency_percent
+        if native_xy_series:
+            layer.set_float(f"plot{plot.native_index}.transparency", series.transparency_percent)
+        else:
+            plot.transparency = series.transparency_percent
 
-    additions = [item for item in layer.plot_list() if item.lt_range() not in before]
-    error_plots = [item for item in additions if item.lt_range() != plot.lt_range()]
+    if not native_xy_series:
+        additions = [item for item in layer.plot_list() if item.lt_range() not in before]
+        error_plots = [item for item in additions if item.lt_range() != plot.lt_range()]
     for error_plot in error_plots:
-        error_plot.color = series.color
+        if native_xy_series:
+            error_plot.set_cmd(f"-c {op.ocolor(series.color)}")
+        else:
+            error_plot.color = series.color
         error_plot.set_cmd(f"-w {pt_to_origin_width_units(style.error_bar_width_pt)}")
     return plot, error_plots
+
+
+def _add_native_xy_series(
+    op: Any, layer: Any, worksheet: Any, series: OriginSeriesPlan, x_column: str,
+) -> tuple[NativePlotReference, list[NativePlotReference]]:
+    """Use plotxy's native (X,Y,Y-error) binding, avoiding AddPlotFromString on 2021."""
+    if series.plot_type not in {"y", "c"}:
+        raise OriginDrawError("Native XY creation supports line-and-symbol or column series.")
+    plot_id = 202 if series.plot_type == "y" else 203
+    source_columns = [x_column, series.plot_column]
+    if series.error_column:
+        source_columns.append(series.error_column)
+    columns = [worksheet.lt_col_index(name) for name in source_columns]
+    if any(index < 1 for index in columns):
+        raise OriginDrawError("Origin XY source columns are missing from the worksheet.")
+    before = len(layer.plot_list())
+    target = layer.lt_range()
+    data_range = f"{worksheet.lt_range(False)}!({','.join(str(index) for index in columns)})"
+    # Official plotxy example: iy:=(1,2,3) plots column 3 as Y error for column 2.
+    # https://docs.originlab.com/x-function/ref/plotxy/
+    if not op.lt_exec(f"plotxy iy:={data_range} plot:={plot_id} ogl:={target}!;"):
+        raise OriginDrawError(f"Origin plotxy failed for XY series: {series.label}")
+    layer.activate()
+    expected_types = (plot_id, 231) if series.error_column else (plot_id,)
+    if len(layer.plot_list()) != before + len(expected_types):
+        raise OriginDrawError("Origin did not create the planned value and native Y-error plots.")
+    plots = [NativePlotReference(f"{target}!{index}", layer.obj)
+             for index in range(before + 1, before + 1 + len(expected_types))]
+    for plot, expected_type in zip(plots, expected_types, strict=True):
+        if not layer.obj.LT_execute(
+            f"range __xy_plot={plot.lt_range()};get __xy_plot -pt __xy_type;"
+        ) or int(op.lt_float("__xy_type")) != expected_type:
+            raise OriginDrawError("Origin XY plots do not retain their native plot types.")
+    bindings = [(plots[0], "-wx", columns[0]), (plots[0], "-wy", columns[1])]
+    for plot, option, column in bindings:
+        if not layer.obj.LT_execute(
+            f"range {option} __xy_actual={plot.lt_range()};"
+            f"range __xy_expected={worksheet.lt_range(False)}!col({column});"
+            "string __xy_actual_name$=nameof(__xy_actual)$;"
+            "string __xy_expected_name$=nameof(__xy_expected)$;"
+            "__xy_actual_count=count(__xy_actual,1);"
+            "__xy_expected_count=count(__xy_expected,1);"
+        ):
+            raise OriginDrawError("Origin could not read the native XY source binding.")
+        actual = op.get_lt_str("__xy_actual_name")
+        expected = op.get_lt_str("__xy_expected_name")
+        actual_count = float(op.lt_float("__xy_actual_count"))
+        expected_count = float(op.lt_float("__xy_expected_count"))
+        if (not actual or actual != expected or not math.isfinite(actual_count)
+                or actual_count <= 0 or actual_count != expected_count):
+            raise OriginDrawError(
+                f"Origin XY source binding differs from the frozen series: {option} "
+                f"plot={plot.lt_range()} actual={actual!r}/{actual_count}, "
+                f"expected={expected!r}/{expected_count}."
+            )
+    if series.error_column:
+        # ORG-30117: range -w/-wy on an error plot returns its main Y column
+        # until Origin 2025. Read the error object's own dataset identity.
+        # https://www.originlab.com/ReleaseNotes/detail.aspx?id=20256ORG-30117
+        error_plot = plots[1]
+        native = list(layer.obj.DataPlots)[error_plot.native_index - 1]
+        actual = native.GetDatasetName()
+        if not layer.obj.LT_execute(
+            f"range __xy_expected={worksheet.lt_range(False)}!col({columns[2]});"
+            "string __xy_expected_name$=nameof(__xy_expected)$;"
+            "__xy_expected_count=count(__xy_expected,1);"
+        ):
+            raise OriginDrawError("Origin could not read the expected Y-error dataset.")
+        expected = op.get_lt_str("__xy_expected_name")
+        expected_count = float(op.lt_float("__xy_expected_count"))
+        if (not actual or actual != expected or not math.isfinite(expected_count)
+                or expected_count <= 0):
+            raise OriginDrawError(
+                f"Origin Y-error source binding differs from the frozen series: "
+                f"plot={error_plot.lt_range()} actual={actual!r}, "
+                f"expected={expected!r}/{expected_count}."
+            )
+    return plots[0], plots[1:]
 
 
 def _set_bar_transparency(
@@ -886,7 +997,10 @@ def _set_bar_transparency(
     style: AdaptiveOriginStyle,
 ) -> dict[str, float]:
     """Set and read back the documented ``layer.plotn.transparency`` property."""
-    plot_indices = {plot.lt_range(): index for index, plot in enumerate(layer.plot_list(), start=1)}
+    if main_plots and all(isinstance(plot, NativePlotReference) for plot in main_plots.values()):
+        plot_indices = {plot.lt_range(): plot.native_index for plot in main_plots.values()}
+    else:
+        plot_indices = {plot.lt_range(): index for index, plot in enumerate(layer.plot_list(), start=1)}
     state: dict[str, float] = {}
     for series in table.series:
         if series.plot_type != "c":
@@ -1052,7 +1166,8 @@ def _style_legend(
 
 
 def _position_publication_legend(
-    op: Any, layer: Any, legend: Any | None, style: AdaptiveOriginStyle
+    op: Any, layer: Any, legend: Any | None, style: AdaptiveOriginStyle,
+    *, expected_frame: int = 0,
 ) -> dict[str, float | int]:
     """Explicitly place editable legend text and verify physical page bounds."""
     if legend is None:
@@ -1075,6 +1190,17 @@ def _position_publication_legend(
     )
     layer.obj.LT_execute("doc -uw;")
     bounds = {key: float(legend.get_float(key)) for key in ("left", "top", "width", "height")}
+    if (external and getattr(style, "personal_profile", None)
+            and bounds["left"] + bounds["width"] > page_width * 0.99):
+        # Native text wrapping fits the inherited legend column without
+        # resizing the template page/data layer or reducing the requested font.
+        # https://docs.originlab.com/labtalk/ref/graphic-objs/
+        available = page_width * 0.99 - bounds["left"]
+        if available > 0:
+            legend.set_int("wrap", 1)
+            legend.set_float("wrapwidth", available)
+            layer.obj.LT_execute("doc -uw;")
+            bounds = {key: float(legend.get_float(key)) for key in ("left", "top", "width", "height")}
     attach = int(legend.get_int("attach"))
     frame = int(legend.get_int("showframe"))
     plot_right = page_width * (style.layer_left_percent + style.layer_width_percent) / 100
@@ -1090,7 +1216,7 @@ def _position_publication_legend(
         or bounds["left"] + bounds["width"] > page_width * 0.99
         or bounds["top"] + bounds["height"] > page_height * 0.97
         or attach != 1
-        or frame != 0
+        or frame != expected_frame
     ):
         raise OriginDrawError(
             ("The external legend does not fit its reserved column; "
@@ -1305,7 +1431,10 @@ def _verify_plots(
     transparency: dict[str, float] = {}
     for index, item in enumerate(table.series, start=1):
         plot = main_plots[item.label]
-        transparency[item.label] = float(plot.transparency)
+        transparency[item.label] = float(
+            plot.layer.GetNumProp(f"plot{plot.native_index}.transparency")
+            if isinstance(plot, NativePlotReference) else plot.transparency
+        )
         if item.plot_type in {"l", "y"}:
             variable = f"__osc_line_style_{index}"
             if not plot.layer.LT_execute(
@@ -1331,7 +1460,7 @@ def _verify_plots(
                 verify_plot_line_widths(op, line_plots, style.plot_line_width_pt) if line_plots else {}
             ),
             "bar_border_widths": (
-                verify_column_border_widths(op, bar_plots, style.bar_border_width_pt) if bar_plots else {}
+                verify_column_border_widths(op, bar_plots, style.bar_border_width_pt, style=style) if bar_plots else {}
             ),
             "bar_transparency_percent": bar_transparency,
             "error_bar_widths": (
@@ -1365,6 +1494,7 @@ def _verify_plots(
                     main_plots[item.label],
                     item.color,
                     variable_name=f"__osc_color_{index}",
+                    **({"style": style} if item.plot_type == "c" else {}),
                 )
                 for index, item in enumerate(table.series)
             },
@@ -1659,6 +1789,7 @@ def _build_origin_graph(
             series,
             series.x_column or x_column,
             style,
+            native_xy_series=preparation.plot_spec.plot_kind in {"line_error", "bar_error"},
         )
         main_plots[series.label] = main
         for index, error in enumerate(errors, start=1):
@@ -1696,16 +1827,26 @@ def _build_origin_graph(
     for label in title_labels.values():
         if label is not None:
             label.set_int("show", 1)
+    personal_state = None
+    if getattr(style, "personal_profile", None):
+        bland_labels = _add_bland_altman_labels(op, layer, preparation)
+        inset_state = _add_uv_vis_inset(op, graph, worksheet, preparation)
+        personal_state = apply_personal_typography(op, graph, style)
+        layer.activate()
     op.lt_exec("doc -uw;")
     _position_axis_titles_on_page(op, layer, title_labels)
     op.lt_exec("doc -uw;")
     if category_rotation:
-        _position_rotated_category_title(op, title_labels["x_title"])
+        if personal_state is not None:
+            _position_rotated_category_title(op, title_labels["x_title"], style)
+        else:
+            _position_rotated_category_title(op, title_labels["x_title"])
     else:
         _position_x_title(op, title_labels["x_title"], style)
     op.lt_exec("doc -uw;")
 
-    bland_labels = _add_bland_altman_labels(op, layer, preparation)
+    if personal_state is None:
+        bland_labels = _add_bland_altman_labels(op, layer, preparation)
     title_labels.update(bland_labels)
     legend_geometry = _position_publication_legend(op, layer, legend, style)
 
@@ -1714,7 +1855,10 @@ def _build_origin_graph(
     title_state = _title_geometry(op, title_labels)
     expected_text = {name: style.axis_title_size_pt for name in title_labels}
     for name in bland_labels:
-        expected_text[name] = float(round(style.legend_size_pt * 0.88))
+        expected_text[name] = float(
+            style.personal_profile["overrides"].get("annotation_size_pt", round(style.legend_size_pt * 0.88))
+            if personal_state is not None else round(style.legend_size_pt * 0.88)
+        )
     if legend is not None:
         title_labels["legend"] = legend
         expected_text["legend"] = style.legend_size_pt
@@ -1731,14 +1875,15 @@ def _build_origin_graph(
         bar_transparency,
         style,
     )
-    inset_state = _add_uv_vis_inset(op, graph, worksheet, preparation)
-
+    if personal_state is None:
+        inset_state = _add_uv_vis_inset(op, graph, worksheet, preparation)
     output.result_opju.unlink(missing_ok=True)
     if not op.save(str(output.result_opju)):
         raise OriginDrawError("Origin did not save result.opju")
     require_nonempty(output.result_opju)
 
     report = {
+        **({"personal_profile": personal_state} if personal_state is not None else {}),
         **geometry,
         "template_id": preparation.template_id,
         "plan_digest": preparation.plan_digest,
@@ -1787,13 +1932,17 @@ def run_scientific_template(
             raise OriginDrawError("Origin session was not initialized")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_origin_graph(op, frame, output, resolved)
+        style = _figure_style(resolved)
         exports = export_graph(
             op,
             graph,
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
         )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         write_json(output.origin_verify_report, verify_report)
         write_json(

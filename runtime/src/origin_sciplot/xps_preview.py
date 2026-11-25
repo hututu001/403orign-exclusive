@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
+from matplotlib.text import Text
 from matplotlib.ticker import AutoMinorLocator, FixedLocator, FuncFormatter, MaxNLocator, NullLocator
 
 from origin_sciplot.origin_backend.base_style_contract import (
@@ -640,6 +641,13 @@ def _build_xps_preview_figure(preparation: XpsPreparation) -> Figure:
         bottom=0.15,
         top=0.97,
     )
+    if style.personal_profile:
+        overrides = style.personal_profile["overrides"]
+        for text in figure.findobj(match=Text):
+            if "font_family" in overrides:
+                text.set_fontfamily(overrides["font_family"])
+            if "bold" in overrides:
+                text.set_fontweight("bold" if overrides["bold"] else "normal")
     return figure
 
 

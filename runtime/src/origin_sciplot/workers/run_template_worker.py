@@ -165,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text-overrides-json")
     parser.add_argument("--palette-id")
     parser.add_argument("--visual-style-json")
+    parser.add_argument("--personal-profile-json")
     parser.add_argument("--reference-style-json")
     parser.set_defaults(keep_origin_open=True)
     parser.add_argument("--keep-origin-open", dest="keep_origin_open", action="store_true")
@@ -245,6 +246,58 @@ def _parse_visual_style_request(raw: str | None) -> dict[str, Any] | None:
             "The frozen XPS visual-style request is incomplete.",
         )
     return payload
+
+
+def _parse_personal_profile_request(raw: str | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    from origin_sciplot.scientific_visual import normalize_personal_profile, personal_profile_hash
+
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"id", "overrides", "profile_hash", "report"}:
+            raise ValueError("The frozen personal-profile request is incomplete.")
+        profile = normalize_personal_profile({"id": payload["id"], "overrides": payload["overrides"]})
+        report = payload["report"]
+        if not isinstance(report, dict):
+            raise ValueError("The frozen personal-profile report must be an object.")
+        report_payload = dict(report)
+        expected_hash = report_payload.pop("report_hash", None)
+        actual_hash = hashlib.sha256(json.dumps(
+            report_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        if (
+            profile != {"id": payload["id"], "overrides": payload["overrides"]}
+            or payload["profile_hash"] != personal_profile_hash(profile)
+            or expected_hash != actual_hash
+            or report.get("id") != profile["id"]
+            or report.get("overrides") != profile["overrides"]
+        ):
+            raise ValueError("The frozen personal profile and its report do not match.")
+    except (TypeError, ValueError) as exc:
+        raise ScientificWorkflowError("personal_profile_json_invalid", str(exc)) from exc
+    return payload
+
+
+def _apply_personal_profile_request(
+    preparation: Any, request: dict[str, Any] | None,
+) -> tuple[Any, dict[str, Any] | None]:
+    if request is None:
+        return preparation, None
+    from origin_sciplot.scientific_visual import apply_personal_profile
+
+    try:
+        updated, report = apply_personal_profile(
+            preparation, {"id": request["id"], "overrides": request["overrides"]},
+        )
+    except (TypeError, ValueError) as exc:
+        raise ScientificWorkflowError("personal_profile_invalid", str(exc)) from exc
+    if report != request["report"]:
+        raise ScientificWorkflowError(
+            "personal_profile_report_mismatch",
+            "The worker personal-profile decision differs from the frozen plan.",
+        )
+    return updated, report
 
 
 def _apply_reference_style_request(
@@ -392,6 +445,41 @@ def _record_template_compatibility(
     write_json(output.environment_report, environment)
     write_json(output.origin_verify_report, verify_report)
     return decision_payload
+
+
+def _record_personal_profile(output: RunOutput, result: Any, report: dict[str, Any] | None) -> None:
+    if report is None:
+        return
+    write_json(output.output_dir / "personal_profile_report.json", report)
+    try:
+        verify_report = json.loads(output.origin_verify_report.read_text(encoding="utf-8"))
+        if not isinstance(verify_report, dict):
+            raise ValueError("Origin readback must be an object.")
+    except (OSError, ValueError) as exc:
+        raise OriginDrawError(
+            "Origin personal-profile evidence could not be read",
+            code="personal_profile_report_invalid", stage="personal_profile_report",
+        ) from exc
+    from origin_sciplot.scientific_visual import personal_profile_hash
+
+    actual = verify_report.get("personal_profile")
+    profile = {"id": report["id"], "overrides": report["overrides"]}
+    if (
+        not isinstance(actual, dict)
+        or actual.get("id") != profile["id"]
+        or actual.get("overrides") != profile["overrides"]
+        or actual.get("profile_hash") != personal_profile_hash(profile)
+        or actual.get("passed") is not True
+        or actual.get("plot_styles_preserved") is not True
+    ):
+        raise OriginDrawError(
+            "Origin personal-profile readback does not match the frozen plan",
+            code="personal_profile_readback_mismatch", stage="personal_profile_report",
+        )
+    verify_report["personal_profile_application"] = report
+    write_json(output.origin_verify_report, verify_report)
+    if isinstance(result, dict) and isinstance(result.get("verify"), dict):
+        result["verify"]["personal_profile_application"] = report
 
 
 def _record_reference_style(
@@ -646,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     scientific_analysis = None
     reference_style_report: dict[str, Any] | None = None
     xps_visual_style_report: dict[str, Any] | None = None
+    personal_profile_report: dict[str, Any] | None = None
     try:
         render_plan_source = None
         if args.render_plan_file:
@@ -661,6 +750,7 @@ def main(argv: list[str] | None = None) -> int:
             args.reference_style_json
         )
         visual_style_request = _parse_visual_style_request(args.visual_style_json)
+        personal_profile_request = _parse_personal_profile_request(args.personal_profile_json)
         column_mapping = None
         scientific_mapping = None
         scientific_text_overrides: dict[str, str] | None = None
@@ -833,6 +923,20 @@ def main(argv: list[str] | None = None) -> int:
                     reasons=list(scientific_analysis.confirmation_reasons),
                 )
                 return WorkerExitCode.VALIDATION_FAILED
+        if personal_profile_request is not None:
+            if xps_analysis is not None:
+                xps_analysis, personal_profile_report = _apply_personal_profile_request(
+                    xps_analysis, personal_profile_request,
+                )
+            elif scientific_analysis is not None:
+                scientific_analysis, personal_profile_report = _apply_personal_profile_request(
+                    scientific_analysis, personal_profile_request,
+                )
+            else:
+                raise ScientificWorkflowError(
+                    "personal_profile_template_unsupported",
+                    "This renderer has no preparation contract for personal profiles.",
+                )
         schema = load_schema(manifest.schema_path)
 
         # Keep all read-only plan and data checks in the sandbox. Request the
@@ -945,6 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
             runner_options["preparation"] = scientific_analysis
 
         def verify_runner_result(result_payload: Any) -> Mapping[str, Any]:
+            _record_personal_profile(output, result_payload, personal_profile_report)
             _record_xps_visual_style(
                 output,
                 result_payload,

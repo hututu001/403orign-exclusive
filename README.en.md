@@ -1,18 +1,18 @@
 <div align="center">
   <img src="runtime/src/origin_sciplot/resources/app_icon.png" width="64" alt="EditaPlot icon">
-  <h1>EditaPlot</h1>
+  <h1>403orign专属 · Personal EditaPlot Edition</h1>
   <p><strong>Give Codex the table. Get an editable scientific figure back in Origin.</strong></p>
   <p>Understand the data · Choose the view · Customize the style · Verify the deliverables</p>
   <p>
     <img alt="Apache-2.0 open source" src="https://img.shields.io/badge/license-Apache--2.0-0f766e?style=flat-square">
     <img alt="Windows 10/11 x64" src="https://img.shields.io/badge/Windows-10%2F11%20x64-315b7d?style=flat-square">
     <img alt="Python 3.11–3.12" src="https://img.shields.io/badge/Python-3.11%E2%80%933.12-315b7d?style=flat-square">
-    <a href="https://github.com/hang-jin/editaplot"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/hang-jin/editaplot?style=social"></a>
+    <a href="https://github.com/hututu001/403orign-exclusive"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/hututu001/403orign-exclusive?style=social"></a>
   </p>
   <p><a href="#get-started">Start</a> · <a href="docs/gallery.en.md">Gallery</a> · <a href="#three-common-requests-to-copy">Prompts</a> · <a href="docs/quickstart.en.md">Guide</a> · <a href="README.md">中文</a></p>
 </div>
 
-I built EditaPlot to spend less time repeatedly tuning figures and more time discussing the data itself.
+This personal edition is maintained by hututu001 and derives from [EditaPlot](https://github.com/hang-jin/editaplot).
 
 Tell Codex what the table contains and what you want to show. It explains each column first, waits for confirmation, then uses local Origin and checks the result.
 
@@ -53,6 +53,12 @@ All examples use **synthetic teaching data and real Origin output**. They are no
 
 **[Explore all 45 plotting routes →](docs/gallery.en.md)**　[Fluorescence and EEG signals](docs/research_signals.md)　[中文图库](docs/gallery.md)
 
+## Personal defaults
+
+Every new CLI plan automatically reads the portable [`runtime/personal-profile.json`](runtime/personal-profile.json): 20 confirmed typography, page, legend, axis and bar-gradient settings. No workstation-local profile is needed. Unspecified fields retain the selected upstream template defaults. A matching local partial profile can override selected fields; explicit supported per-figure options take precedence. `--personal-profile none` opts out, and existing frozen plans retain their original settings.
+
+See the [Chinese specification](skill/editaplot/references/figure-contract.md#403orign专属项目默认) and [project rules](AGENTS.md). Reuse upstream functionality before adding extensions. The command and Skill identifier remain `editaplot` for compatibility. Origin and the supported local runtime are still required.
+
 ## Get started
 
 ### 1 / Install: give this request to Codex
@@ -61,14 +67,14 @@ You do not need to learn Git first. Copy this into Codex:
 
 ~~~text
 Please install EditaPlot from the latest main branch:
-Repository: https://github.com/hang-jin/editaplot
+Repository: https://github.com/hututu001/403orign-exclusive
 Keep the complete repository, including runtime, and run its root editaplot.cmd setup and doctor.
 Reuse a compatible 64-bit Python 3.11/3.12 when available; ask before installing Python.
 Do not install or modify Origin, change the registry/DCOM, request administrator rights, or use mouse control.
 Report whether the environment is ready, then ask me for the dataset.
 ~~~
 
-Alternatively, [download the complete ZIP](https://github.com/hang-jin/editaplot/archive/refs/heads/main.zip), extract it, and let Codex install from that folder.
+Alternatively, [download the complete ZIP](https://github.com/hututu001/403orign-exclusive/archive/refs/heads/main.zip), extract it, and let Codex install from that folder.
 
 **Do not copy only <code>skill/editaplot</code>**. It needs the bundled drawing engine.
 
@@ -76,8 +82,8 @@ Alternatively, [download the complete ZIP](https://github.com/hang-jin/editaplot
 <summary>I use Git; show me the installation commands</summary>
 
 ~~~powershell
-git clone https://github.com/hang-jin/editaplot.git
-Set-Location editaplot
+git clone https://github.com/hututu001/403orign-exclusive.git
+Set-Location 403orign-exclusive
 .\editaplot.cmd setup
 .\editaplot.cmd doctor
 ~~~
@@ -254,33 +260,6 @@ The local plotting runtime does not initiate a network upload. Files given to Co
 | Check Origin-version boundaries | [2021–2026b compatibility](docs/origin-2021-2026-compatibility.md) |
 | Understand source, dependencies and release scope | [Release boundaries](docs/release-boundaries.md) · [Dependency inventory](docs/dependency-inventory.md) |
 
-## Star trend
+## Attribution
 
-If EditaPlot saved you time, a Star helps other researchers find it. I record only daily repository totals—**not account lists, IDs or personal star timestamps**.
-
-<div align="center">
-  <a href="https://github.com/hang-jin/editaplot"><img src="https://raw.githubusercontent.com/hang-jin/editaplot/metrics/assets/star-trend/stars.svg" width="760" alt="EditaPlot aggregate GitHub Star trend"></a>
-</div>
-
-## Open source, contributing, and support
-
-I independently maintain EditaPlot under [Apache License 2.0](LICENSE). It is not affiliated with, sponsored by or endorsed by OriginLab Corporation; product names describe compatibility only.
-
-Useful feedback includes a shareable minimal example and clear reproduction steps. Do not put medical records, private data, credentials or full private paths in Issues.
-
-[Contributing](CONTRIBUTING.md) · [Support scope](SUPPORT.md) · [Security reports](SECURITY.md) · [Privacy](PRIVACY.md)
-
-## Buy me a coffee ☕
-
-If EditaPlot helped, you are welcome to buy me a coffee. Even a small tip encourages continued work on templates and tutorials.
-
-Tips are entirely optional. They do not unlock features, change support priority or affect Apache-2.0 rights. Sharing the project or reporting a useful issue is just as welcome.
-
-<details>
-<summary>WeChat support QR</summary>
-
-<p align="center"><a href="assets/support/wechat-tip.png"><img src="assets/support/wechat-tip.png" width="280" alt="Author-provided WeChat support QR code"></a></p>
-
-Please do not include experimental data, medical records or account details in a payment note.
-
-</details>
+Derived from [hang-jin/editaplot](https://github.com/hang-jin/editaplot), preserving its Git history, [Apache-2.0 license](LICENSE), [NOTICE](NOTICE) and author attribution. This edition adds portable personal defaults and the existing personal-style rendering and verification changes. Upstream implementation and template capabilities remain available.

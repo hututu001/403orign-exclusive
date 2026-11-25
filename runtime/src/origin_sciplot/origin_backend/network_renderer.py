@@ -35,12 +35,13 @@ from origin_sciplot.scientific_workflow import ScientificPreparation, prepare_sc
 from origin_sciplot.template_registry import TemplateManifest
 
 from .base_style_contract import page_size_inches, pt_to_origin_width_units
-from .export_utils import export_graph
+from .export_utils import export_graph, verify_png_export
 from .safe_errors import OriginDrawError
 from .scientific_renderer import _figure_style, _origin_font_code, _style_label
 from .session import OriginSession
 from .verify_utils import (
     PAGE_SIZE_TOLERANCE_CM,
+    apply_personal_typography,
     read_layer_geometry_percent,
     require_nonempty,
     verify_plot_color,
@@ -966,12 +967,17 @@ def _build_origin_graph(
         raise OriginDrawError("Circular-network source data were modified.")
     if output.result_opju.exists():
         raise OriginDrawError("Circular-network output path was unexpectedly pre-existing.")
+    style = _figure_style(preparation)
+    personal_state = (
+        apply_personal_typography(op, graph, style)
+        if getattr(style, "personal_profile", None) else None
+    )
     if not op.save(str(output.result_opju)):
         raise OriginDrawError("Origin did not save result.opju")
     require_nonempty(output.result_opju)
 
-    style = _figure_style(preparation)
     report = {
+        **({"personal_profile": personal_state} if personal_state is not None else {}),
         **page_state,
         "template_id": preparation.template_id,
         "plan_digest": preparation.plan_digest,
@@ -1027,13 +1033,17 @@ def run_network_template(
             raise OriginDrawError("Origin session was not initialized.")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_origin_graph(op, frame, output, resolved)
+        style = _figure_style(resolved)
         exports = export_graph(
             op,
             graph,
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
         )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         write_json(output.origin_verify_report, verify_report)
         write_json(

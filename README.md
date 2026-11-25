@@ -1,22 +1,41 @@
 <div align="center">
   <img src="runtime/src/origin_sciplot/resources/app_icon.png" width="64" alt="EditaPlot 图标">
-  <h1>EditaPlot · 艾迪图</h1>
+  <h1>403orign专属</h1>
   <p><strong>把表格交给 Codex，把可编辑的科研图带回 Origin</strong></p>
   <p>理解数据 · 选择表达 · 定制样式 · 检查交付</p>
   <p>
     <img alt="Apache-2.0 开源" src="https://img.shields.io/badge/license-Apache--2.0-0f766e?style=flat-square">
     <img alt="Windows 10/11 x64" src="https://img.shields.io/badge/Windows-10%2F11%20x64-315b7d?style=flat-square">
     <img alt="Python 3.11–3.12" src="https://img.shields.io/badge/Python-3.11%E2%80%933.12-315b7d?style=flat-square">
-    <a href="https://github.com/hang-jin/editaplot"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/hang-jin/editaplot?style=social"></a>
+    <a href="https://github.com/hututu001/403orign-exclusive"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/hututu001/403orign-exclusive?style=social"></a>
   </p>
   <p><a href="#开始使用">三步开始</a> · <a href="docs/gallery.md">看图选模板</a> · <a href="#三种常用提问直接复制">复制提示词</a> · <a href="docs/quickstart.zh-CN.md">完整教程</a> · <a href="README.en.md">English</a></p>
 </div>
 
-我做 EditaPlot，是想少花一些时间反复调图，多留一些时间讨论数据本身。你把表格和想表达的问题告诉 Codex，它会先说明每列的用途，等你确认后，再调用本机 Origin 绘图和检查结果。
+这是基于 [EditaPlot](https://github.com/hang-jin/editaplot) 的个人发行版，由 hututu001 维护个人格式定制。你把表格和想表达的问题告诉 Codex，它会先说明每列的用途，等你确认后，再调用本机 Origin 绘图和检查结果。
 
 它是一个 **Codex Skill，不是独立绘图软件**。你仍然可以在 Origin 中继续编辑曲线、坐标轴和图例；配色、线宽与版式也可以在已支持的范围内按你的需求调整。
 
 **使用前提：Windows 10/11 x64 实体电脑 + Codex + 本机 Origin/OriginPro。** 日常使用不需要提前打开 Origin；Mac、Linux、WSL 和虚拟机暂不支持。
+
+## 安装后默认就是我的格式
+
+默认配置随仓库发布于 [`runtime/personal-profile.json`](runtime/personal-profile.json)，新图自动启用，无需复制本机隐藏配置，也无需每次重复格式要求。首次安装仍需本机已有 Origin，并运行 `setup` 和 `doctor`。
+
+| 项目 | 默认值 |
+|---|---|
+| 页面 / PNG | 28.8544 × 20.14728 cm / 600 dpi |
+| 字体 | Arial 加粗；轴标题 28 pt，刻度 26 pt，图例和注释 24 pt |
+| 图例 | 图内，复用模板的布局机制 |
+| 常规坐标轴 | 黑色四侧 3 pt；底/左刻度向外；主刻度 8 pt；线性数值轴 1 个次刻度；细节 Auto |
+| 柱状图 | 无边框；模板原色 → 同色浅色 → 原色的横向中心渐变；10% 透明度 |
+| 其它样式与能力 | 继续继承所选原模板；不自动覆盖色板、数据线、误差线、符号形状或半填 |
+
+规则是 **模板默认 → 本项目确认的格式 → 可选本机局部覆盖 → 本次支持的明确参数**。坐标轴规则仅用于适用的笛卡尔图；分类/对数/极坐标、热图等保持其科学语义。旧方案重画时继续使用冻结值。临时恢复原模板可用 `--personal-profile none`。
+
+改长期默认，只需编辑上述 JSON 中已支持的字段；已有 profile 的应用、预览、原生读回和保存重开流程继续复用。新需求先查上游现成能力，缺少时才在现有扩展点补充。详细参数、适用范围和原理见[现有绘图规范](skill/editaplot/references/figure-contract.md#403orign专属项目默认)。
+
+当前 20 项个人样式已在本机 Origin 2021 分组柱图完成原生读回和保存重开，重导 PNG 像素一致。其它路线继承上游能力分级，不代表全部已在此主机实测。
 
 ## 先看看能画什么
 
@@ -58,22 +77,22 @@
 不会 GitHub 也没关系，把下面这段话复制给 Codex：
 
 ~~~text
-请帮我安装最新 main 版 EditaPlot：
-仓库：https://github.com/hang-jin/editaplot
+请帮我安装最新 main 版 403orign专属（EditaPlot 个人版）：
+仓库：https://github.com/hututu001/403orign-exclusive
 请下载并保留完整仓库（包括 runtime），运行根目录 editaplot.cmd setup 和 doctor。
 优先复用已有的 64 位 Python 3.11/3.12；需要安装 Python 时先问我。
 不要安装或修改 Origin，不要修改注册表、DCOM，也不要申请管理员权限或控制鼠标。
 完成后用中文告诉我环境是否就绪，再让我提供数据。
 ~~~
 
-也可以[下载完整 ZIP](https://github.com/hang-jin/editaplot/archive/refs/heads/main.zip)，完整解压后让 Codex 在该文件夹里安装。**不要只复制 <code>skill/editaplot</code> 子目录**，它需要仓库中的绘图引擎。
+也可以[下载完整 ZIP](https://github.com/hututu001/403orign-exclusive/archive/refs/heads/main.zip)，完整解压后让 Codex 在该文件夹里安装。**不要只复制 <code>skill/editaplot</code> 子目录**，它需要仓库中的绘图引擎。
 
 <details>
 <summary>我会用 Git，直接给我安装命令</summary>
 
 ~~~powershell
-git clone https://github.com/hang-jin/editaplot.git
-Set-Location editaplot
+git clone https://github.com/hututu001/403orign-exclusive.git
+Set-Location 403orign-exclusive
 .\editaplot.cmd setup
 .\editaplot.cmd doctor
 ~~~
@@ -156,7 +175,7 @@ Set-Location editaplot
 
 ## 按你的数据选择模板
 
-我目前维护 **45 条公开绘图路线**。同一路线可适配不同系列数、列名或已支持的显示模式，不需要为每种材料重新做一个模板。先看格式，再把自己的数据交给 Codex。
+继承上游的 **45 条公开绘图路线**。同一路线可适配不同系列数、列名或已支持的显示模式，不需要为每种材料重新做一个模板。先看格式，再把自己的数据交给 Codex。
 
 | 你的数据 | 常见表达 | 格式与示例 |
 |---|---|---|
@@ -223,33 +242,10 @@ XPS、GSAS、SHAP、寿命或带隙等有专门的科学边界。绘图层不会
 | 查 Origin 版本适配边界 | [2021–2026b 兼容说明](docs/origin-2021-2026-compatibility.md) |
 | 了解源码、依赖与公开范围 | [发布边界](docs/release-boundaries.md) · [依赖清单](docs/dependency-inventory.md) |
 
-## Star 趋势
+## 来源与维护
 
-如果它帮你省下了调图时间，欢迎点个 Star，让更多有需要的人找到它。我只按日记录仓库 Star 总数，**不保存或展示用户名单、账号 ID 或个人加星时间**。
+本项目基于 [hang-jin/editaplot](https://github.com/hang-jin/editaplot)，保留原 Git 历史、[Apache-2.0 许可证](LICENSE)、[NOTICE](NOTICE) 和作者归属。个人版新增可移植默认 profile，以及既有个人样式的应用和验证；没有将原作者贡献改署为个人原创。
 
-<div align="center">
-  <a href="https://github.com/hang-jin/editaplot"><img src="https://raw.githubusercontent.com/hang-jin/editaplot/metrics/assets/star-trend/stars.svg" width="760" alt="EditaPlot GitHub Star 总数趋势"></a>
-</div>
-
-## 开源、贡献与支持
-
-我以 [Apache License 2.0](LICENSE) 开源并独立维护 EditaPlot。项目与 OriginLab Corporation 没有隶属、赞助或背书关系，相关名称仅说明兼容性。
-
-欢迎提供可公开的最小示例和清楚的复现步骤；请勿在 Issue 放病历、私有数据、凭据或完整私人路径。
+上游功能、教程和模板继续复用；`origin` 指向本个人仓库，`upstream` 可指向原仓库。同步前先检查差异，再运行已有回归和发布检查，不直接用上游文件覆盖个人默认。
 
 [贡献说明](CONTRIBUTING.md) · [支持范围](SUPPORT.md) · [安全报告](SECURITY.md) · [隐私](PRIVACY.md)
-
-## 请我喝杯咖啡 ☕
-
-如果 EditaPlot 对你有用，可以随意请我喝杯咖啡。一毛、两毛或几块钱，对我来说都是鼓励，也支持我继续维护模板和教程。
-
-赞赏完全自愿，不会解锁任何额外功能，不改变问题处理顺序或 Apache-2.0 权利。不赞赏也没关系，分享项目和一条有用的反馈同样帮得上忙。
-
-<details>
-<summary>微信赞赏码</summary>
-
-<p align="center"><a href="assets/support/wechat-tip.png"><img src="assets/support/wechat-tip.png" width="280" alt="作者提供的微信赞赏码"></a></p>
-
-请勿在付款备注中填写实验数据、病历、账号等敏感信息。
-
-</details>

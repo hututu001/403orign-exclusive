@@ -6,3 +6,9 @@ The initial project is maintained through the
 Copyright in individual contributions remains with the respective contributors. Git history is the
 authoritative contribution record. Contributions accepted into this repository are licensed under
 Apache-2.0 as described in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Personal edition
+
+403orign专属 is maintained by [hututu001](https://github.com/hututu001).
+Personal modifications add portable style defaults and verified profile rendering.
+The upstream project and its contributors retain attribution above.

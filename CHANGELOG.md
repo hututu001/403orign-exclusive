@@ -1,3 +1,10 @@
+# 403orign personal edition — 2026-11-25
+
+- Ship the confirmed 20-field profile as a portable, automatically enabled runtime default.
+- Reuse EditaPlot template inheritance, partial local overrides, frozen plans and opt-out.
+- Include the personal typography, axis, borderless bar gradient and saved-project checks developed for this edition.
+- Retain upstream attribution, implementation, scientific contracts and release validation.
+
 # Changelog
 
 ## 2026-10-25 — clearer homepage and measured heatmap row labels

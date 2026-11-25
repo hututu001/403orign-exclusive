@@ -3,7 +3,7 @@ name: editaplot
 description: Analyze local scientific CSV, TXT, XLS, or XLSX data; recommend publication-informed charts and Chinese scientific palettes; freeze a reproducible plan; and automate editable figures through a callable local Origin/OriginPro installation on physical Windows 10/11 x64. Use for beginner “drop in a file and draw it” requests; XPS, XRD, XAS, PL/TRPL, DSC, NMR, FTIR/IR, UV-Vis, electrochemistry, medical/AI evidence, distribution, relationship, error-bar, bar, stacked, pie, Sankey, radar, heatmap, or verified 3D workflows; project-local Python setup; palette selection; and OPJU/PNG/PDF/TIF verification. Do not use on macOS, Linux, WSL, Wine/CrossOver, Parallels, or other VMs; to install or modify Origin; to redistribute reference images; or to claim an unverified Origin route.
 ---
 
-# EditaPlot
+# 403orign专属 · EditaPlot
 
 Turn a scientific question and a read-only table into an auditable, editable Origin figure. Keep
 the beginner experience conversational; use the deterministic engine for inspection, planning,
@@ -116,6 +116,32 @@ rendering, exporting, and readback.
    `legend_position`, and `legend_frame`. Invalid explicit fields or values must fail fast and be
    corrected with the user; never silently discard them or fall back to a reference/default style.
    The render command copies this approved plan into the final output folder as `render-plan.json`.
+   Planning automatically reads the selected runtime's tracked `personal-profile.json`.
+   This portable project default applies without local configuration. The current Skill's untracked
+   `.editaplot-local.json` may add partial `personal_profile` overrides only when its `engine_home`
+   matches the selected engine; explicit null opts out. Unspecified fields inherit the template. The
+   `n4-f-u-v1.2` profile selects a native Origin whole-page size of 11.36 × 7.932 in, PNG 600 dpi, plus
+   native Arial Bold, 28 pt axis titles, 26 pt tick labels, and 24 pt legends/inside text.
+   Its tenth override, `legend_position: inside`, follows the user's whole-figure examples.
+   Three bar-only overrides extend that same profile: `bar_border: none`,
+   `bar_fill: two_color_center`, and `bar_fill_transparency_percent: 10`.
+   Keep each selected template color as the edge/base color and derive its central highlight
+   by mixing 70% white. This is a two-dimensional horizontal center highlight, with the
+   second color following the 10% overall transparency. Apply these only to bar, horizontal_bar,
+   stacked_bar and percent_stacked_bar; other templates report the fields as not applicable.
+   Verify primary/secondary colors, border-none, mode, gradient direction, both transparency
+   controls, native legend samples and saved-project reopening as separate properties.
+   Reuse the existing inside resolver without an external legend column; keep the remaining
+   template defaults. The latest user screenshot is Graph1 Page Properties -> Print/Dimensions;
+   these are whole-page dimensions, not Layer1 dimensions. Retain the inside template's layer
+   percentages and rotation. Export the whole native page directly at 600 dpi, approximately
+   6816 × 4759 px, without extra scaling or padding; native and PNG physical point sizes correspond.
+   Use `--personal-profile none` for a one-off opt-out. An explicit XPS `page_size_cm` still
+   follows the existing explicit-request precedence over personal page defaults. Freeze the profile and hashes in
+   `figure_contract.personal_profile`; rendering replays that plan without rereading local defaults.
+   Old plans without the field keep their original behavior. Read the profile section in
+   `references/figure-contract.md` for field limits and `references/verification.md` for evidence.
+   This implementation is not itself proof that the current host's native render has passed.
 13. Treat Origin readiness as technical state only. Doctor performs read-only discovery of
     `Origin.Application`, `Origin.ApplicationSI`, installed candidates, Python, `originpro`, and
     `OriginExt`; it never launches Origin and `ready_for_render` never means a live connection
@@ -258,6 +284,10 @@ decode acquisition files. Direct names and the ruler live outside the true time-
   decorative 3D, or unjustified grid.
 - Derive physical Origin dimensions from chart type, data density, series count, and label length.
   Keep fixed size only for a profile that explicitly requires it, such as legacy fixed C 1s.
+- Distinguish the whole native page from the Layer1 plot area. For this user's confirmed
+  `legend_position: inside`, reuse the template's existing inside mode and position the legend in
+  a suitable data-free area, guided by their whole-figure examples. Do not retain an external
+  column against that explicit request. Preserve scientific data and verify final bounds and labels.
 - Convert documented point, line-width, and page-size units correctly. Never copy small journal-page
   font values directly into Origin API fields; read back the resulting axis and text objects.
 - Keep each condition's color consistent across related panels. Freeze palette IDs and exact HEX
@@ -297,3 +327,11 @@ technical paths after the concise outcome.
 - `references/verification.md`: mandatory artifacts, readback, and visual QA.
 - `references/showcase.md`: neutral demonstration data and gallery policy.
 - `references/palettes.md`: Chinese palette selector, compatibility, and accessibility limits.
+
+## 个人坐标轴追加默认 2026-11-25
+
+用户指出完整规范中的坐标轴没有应用后，原profile新增7项：`frame_line_width_pt: 3`、`major_tick_length_pt: 8`、`axis_color: #000000`、`tick_direction: out`、`numeric_minor_ticks: 1`、`tick_details: auto`、`axis_frame: four_sides`，共20项。常规笛卡尔图使用黑色四侧3 pt轴框，底/左向外主次刻度，主刻度8 pt，上/右保留框线且无刻度（双Y按已有标签角色保留）。线性数值轴每主刻度间1个次刻度，分类轴和对数分隔保持模板语义。主刻度粗细、次刻度长度及粗细为Origin原生Auto。主色板、数据线/误差线、符号形状和半填、图层百分比仍继承模板；此追加不自动把所有历史实测提升为默认。专用无轴、极坐标、热图、事件栅格等图型记录不适用。正式验收必须含`personal_profile.axis_styles`以及独立保存重开，不能仅凭页面/字体通过就声称整份规范全部生效。
+
+## 403orign专属维护约定
+
+默认样式的唯一可执行来源是所选 runtime 的 `personal-profile.json`；新图自动启用，不要求用户反复指定。格式规范沿用 `references/figure-contract.md`。新要求先查上游/当前项目现成实现，优先复用；缺少时才做最小扩展。科学含义不明仍需确认。项目显示名改变不改 CLI/Skill 的 `editaplot` 标识。

@@ -42,6 +42,8 @@ def verify_heatmap_row_labels(
     page_width = float(op.lt_float("page.width"))
     page_height = float(op.lt_float("page.height"))
     font_code = float(op.lt_float(f"font({style.font_family})"))
+    profile = getattr(style, "personal_profile", None) or {}
+    expected_bold = int(profile.get("overrides", {}).get("bold", False))
     if not all(math.isfinite(value) and value > 0 for value in (page_width, page_height, font_code)):
         raise OriginDrawError("Origin Heatmap page dimensions or font readback are invalid.")
     labels = []
@@ -59,7 +61,7 @@ def verify_heatmap_row_labels(
             raise OriginDrawError(f"Origin Heatmap row label {name} no longer matches the source text.")
         if (
             any(obj.get_int(prop) != expected for prop, expected in
-                (("attach", 1), ("showframe", 0), ("show", 1), ("bold", 0), ("link", 0)))
+                (("attach", 1), ("showframe", 0), ("show", 1), ("bold", expected_bold), ("link", 0)))
             or abs(actual["fsize"] - style.tick_label_size_pt) > 0.05
             or abs(actual["font"] - font_code) > 0.5
             or abs(actual["rotate"]) > 0.1
@@ -106,6 +108,8 @@ def add_heatmap_row_labels(
         layer.set_int(prop, 0)
     page_width = float(op.lt_float("page.width"))
     page_height = float(op.lt_float("page.height"))
+    profile = getattr(style, "personal_profile", None) or {}
+    bold = bool(profile.get("overrides", {}).get("bold", False))
     for anchor in _anchors(layout, style, geometry):
         obj, _initial_state = _add_shap_page_label(
             op, graph, layer,
@@ -113,7 +117,7 @@ def add_heatmap_row_labels(
             center_x_percent=anchor.right_percent - 2,
             center_y_percent=anchor.center_y_percent,
             size_pt=style.tick_label_size_pt, font_family=style.font_family,
-            bold=False, color="#000000",
+            bold=bold, color="#000000",
         )
         # GObject.link=0 is documented since Origin 2015 SR1 and isolated on 2024b.
         # Disable substitutions before assigning source text, never after its first refresh.

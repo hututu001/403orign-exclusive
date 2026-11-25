@@ -919,6 +919,26 @@ def install_skill(argv: list[str], *, _lock_held: bool = False) -> int:
         "engine_home": str(engine_root),
         "generated_by": "EditaPlot setup",
     }
+    # Preserve the selected engine's local customization across the existing
+    # atomic setup transaction; never copy a profile from a different engine.
+    for config_root in (target, SKILL_ROOT):
+        config_path = config_root / LOCAL_CONFIG_NAME
+        if not config_path.is_file():
+            continue
+        try:
+            previous_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("The existing EditaPlot local configuration is invalid.") from exc
+        if not isinstance(previous_config, dict):
+            raise ValueError("The existing EditaPlot local configuration must be an object.")
+        previous_engine = previous_config.get("engine_home")
+        if (
+            isinstance(previous_engine, str)
+            and Path(previous_engine).expanduser().resolve() == engine_root.resolve()
+            and "personal_profile" in previous_config
+        ):
+            local_config["personal_profile"] = previous_config["personal_profile"]
+            break
     copied = 0
     staging: Path | None = None
     if not same_as_source:
@@ -1144,6 +1164,12 @@ def main(argv: list[str] | None = None) -> int:
             return install_skill(arguments[1:])
         except OSError as exc:
             return _setup_filesystem_failure(arguments[1:], exc)
+        except ValueError as exc:
+            _emit(
+                {"ok": False, "error": {"code": "setup_local_config_invalid", "message": str(exc)}},
+                stream=sys.stderr,
+            )
+            return 2
 
     engine_root, config = _resolve_engine(arguments)
     discovery = discover_python(engine_root)

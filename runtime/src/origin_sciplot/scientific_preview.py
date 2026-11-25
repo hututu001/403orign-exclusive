@@ -11,7 +11,9 @@ from typing import Any
 import matplotlib as mpl
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.container import BarContainer
 from matplotlib.figure import Figure
+from matplotlib.legend_handler import HandlerBase
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, Patch, PathPatch, Rectangle
 from matplotlib.path import Path
@@ -32,6 +34,8 @@ from .heatmap_layout import (
 from .event_raster import event_rows_by_condition
 from .scientific_visual import (
     AdaptiveOriginStyle,
+    column_highlight_color,
+    personal_bar_style,
     interpolate_hex_colors,
     palette_colors,
     series_palette_colors,
@@ -937,6 +941,52 @@ def _draw_xrd_stacked(axis: Any, frame: Any, preparation: ScientificPreparation)
     axis.tick_params(axis="y", which="both", length=0)
 
 
+def _column_gradient_rgb(color: str, samples: int = 129) -> np.ndarray:
+    base = np.array(mpl.colors.to_rgb(color))
+    highlight = np.array(mpl.colors.to_rgb(column_highlight_color(color)))
+    weight = 1.0 - np.abs(np.linspace(-1.0, 1.0, samples))
+    return base + weight[:, None] * (highlight - base)
+
+
+def _apply_preview_column_style(axis: Any, bars: Any, preparation: ScientificPreparation) -> None:
+    native_style = preparation.plot_spec.display_plan.figure_style
+    options = personal_bar_style(native_style) if native_style else {}
+    for patch in bars.patches:
+        if options.get("bar_border") == "none":
+            patch.set_edgecolor("none")
+        if options.get("bar_fill") != "two_color_center" or patch.get_width() == 0 or patch.get_height() == 0:
+            continue
+        color = mpl.colors.to_hex(patch.get_facecolor())
+        rgb = _column_gradient_rgb(color)
+        alpha = patch.get_alpha()
+        rgba = np.column_stack((rgb, np.full(len(rgb), 1.0 if alpha is None else alpha)))[None, :, :]
+        x, y = patch.get_xy()
+        # Preserve the original patch for native legend handling and clipping.
+        patch.set_facecolor("none")
+        patch._editaplot_gradient_color = color
+        patch._editaplot_gradient_alpha = alpha
+        axis.imshow(
+            rgba, extent=(x, x + patch.get_width(), y, y + patch.get_height()),
+            origin="lower", aspect="auto", interpolation="bilinear",
+            clip_path=patch, clip_on=True, zorder=patch.get_zorder(),
+        )
+
+
+class _ColumnGradientLegend(HandlerBase):
+    def create_artists(self, legend, original, xdescent, ydescent, width, height, fontsize, transform):
+        patch = original.patches[0]
+        color = getattr(patch, "_editaplot_gradient_color", mpl.colors.to_hex(patch.get_facecolor()))
+        alpha = getattr(patch, "_editaplot_gradient_alpha", patch.get_alpha())
+        rgb = _column_gradient_rgb(color, 33)
+        return [
+            Rectangle(
+                (-xdescent + index * width / len(rgb), -ydescent),
+                width / len(rgb) + 0.01, height, facecolor=value, edgecolor="none",
+                alpha=alpha, transform=transform,
+            ) for index, value in enumerate(rgb)
+        ]
+
+
 def _draw_bars(axis: Any, frame: Any, preparation: ScientificPreparation) -> None:
     spec = preparation.plot_spec
     style = _preview_style(axis.figure)
@@ -948,7 +998,7 @@ def _draw_bars(axis: Any, frame: Any, preparation: ScientificPreparation) -> Non
     width = min(spec.display_plan.bar_inner_width / max(count, 1), 0.62)
     for index, series in enumerate(spec.series):
         offset = (index - (count - 1) / 2.0) * spacing
-        axis.bar(
+        bars = axis.bar(
             x + offset,
             series_values(frame, series),
             width=width,
@@ -965,6 +1015,7 @@ def _draw_bars(axis: Any, frame: Any, preparation: ScientificPreparation) -> Non
             label=_series_label(series),
             zorder=3,
         )
+        _apply_preview_column_style(axis, bars, preparation)
     axis.set_xticks(
         x,
         categories,
@@ -996,7 +1047,7 @@ def _draw_horizontal_bars(axis: Any, frame: Any, preparation: ScientificPreparat
             ablation_colors = interpolate_hex_colors(palette[0], palette[-1], len(categories))
     for index, series in enumerate(spec.series):
         offset = (index - (count - 1) / 2.0) * spacing
-        axis.barh(
+        bars = axis.barh(
             y + offset,
             series_values(frame, series),
             xerr=_error_values(frame, series),
@@ -1013,6 +1064,7 @@ def _draw_horizontal_bars(axis: Any, frame: Any, preparation: ScientificPreparat
             label=_series_label(series),
             zorder=3,
         )
+        _apply_preview_column_style(axis, bars, preparation)
     axis.set_yticks(y, categories)
     axis.set_ylim(-0.60, max(len(categories) - 0.40, 0.60))
     axis.invert_yaxis()
@@ -1039,7 +1091,7 @@ def _draw_stacked_bars(axis: Any, frame: Any, preparation: ScientificPreparation
     bottom = np.zeros(len(categories), dtype=float)
     for index, series in enumerate(spec.series):
         display = np.nan_to_num(values[:, index], nan=0.0)
-        axis.bar(
+        bars = axis.bar(
             x,
             display,
             bottom=bottom,
@@ -1051,6 +1103,7 @@ def _draw_stacked_bars(axis: Any, frame: Any, preparation: ScientificPreparation
             label=series.label,
             zorder=3,
         )
+        _apply_preview_column_style(axis, bars, preparation)
         bottom += display
     if spec.plot_kind == "stacked_bar" and spec.aggregate_error_column:
         errors = frame[spec.aggregate_error_column].to_numpy(dtype=float, copy=True)
@@ -2241,16 +2294,73 @@ def _add_legend(axis: Any, right_axis: Any | None, preparation: ScientificPrepar
         frameon=False,
         fontsize=style.legend_pt,
         handlelength=1.5,
+        handler_map=(
+            {BarContainer: _ColumnGradientLegend()}
+            if (preparation.template_id in {"bar", "horizontal_bar", "stacked_bar", "percent_stacked_bar"}
+                and personal_bar_style(preparation.plot_spec.display_plan.figure_style).get("bar_fill")
+                == "two_color_center") else None
+        ),
     )
 
 
-def _apply_font_contract(figure: Figure) -> None:
+def _apply_personal_preview_fonts(figure: Figure, style: AdaptiveOriginStyle | None) -> None:
+    """Apply only explicit personal font choices; preserve text, color and geometry."""
+    profile = style.personal_profile if style is not None else None
+    if not profile:
+        return
+    overrides = profile["overrides"]
+    if "font_family" not in overrides and "bold" not in overrides:
+        return
+    for text in figure.findobj(match=Text):
+        if "font_family" in overrides:
+            text.set_fontfamily(overrides["font_family"])
+        if "bold" in overrides:
+            text.set_fontweight("bold" if overrides["bold"] else "normal")
+
+
+def _apply_personal_preview_axes(figure: Figure, style: AdaptiveOriginStyle | None) -> None:
+    from .scientific_visual import personal_axis_style
+    from matplotlib.ticker import AutoMinorLocator
+    values = personal_axis_style(style) if style else {}
+    if not values:
+        return
+    scale = PREVIEW_WIDTH_IN / (style.page_width_cm / 2.54)
+    for axis in figure.axes:
+        if not axis.axison or axis.name != "rectilinear":
+            continue
+        width = values.get("frame_line_width_pt", style.frame_line_width_pt) * scale
+        for spine in axis.spines.values():
+            if "frame_line_width_pt" in values:
+                spine.set_linewidth(width)
+            if "axis_color" in values:
+                spine.set_color(values["axis_color"])
+        kwargs = {}
+        if "tick_direction" in values:
+            kwargs["direction"] = values["tick_direction"]
+        if "axis_color" in values:
+            kwargs["color"] = values["axis_color"]
+        axis.tick_params(which="both", **kwargs)
+        if "major_tick_length_pt" in values:
+            axis.tick_params(which="major", length=values["major_tick_length_pt"] * scale)
+        if values.get("tick_details") == "auto":
+            axis.tick_params(which="both", width=width)
+            axis.tick_params(which="minor", length=style.major_tick_length_pt * scale / 2)
+        if "numeric_minor_ticks" in values:
+            for coordinate in (axis.xaxis, axis.yaxis):
+                # Fixed category locators preserve their existing subdivision.
+                if coordinate.get_scale() == "linear" and not isinstance(coordinate.get_major_locator(), FixedLocator):
+                    coordinate.set_minor_locator(AutoMinorLocator(int(values["numeric_minor_ticks"]) + 1))
+
+
+def _apply_font_contract(figure: Figure, style: AdaptiveOriginStyle | None = None) -> None:
     """Use Arial unless a CJK label needs the Windows sans-serif fallback."""
     for text in figure.findobj(match=Text):
         if re.search(r"[\u3400-\u9fff]", text.get_text()):
             text.set_fontfamily("Microsoft YaHei")
         else:
             text.set_fontfamily("Arial")
+    _apply_personal_preview_fonts(figure, style)
+    _apply_personal_preview_axes(figure, style)
 
 
 def _draw_flim_phasor_preview(axis: Any, frame: Any, preparation: ScientificPreparation) -> None:
@@ -2329,7 +2439,7 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
         for condition, left, y in layout.condition_labels:
             figure.text(left / 100, 1 - y / 100, condition, ha="left", va="center",
                         fontsize=style.legend_pt, color=colors[condition])
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "signal_stack":
         figure, axis = _new_figure(preparation, frozen_geometry=True)
@@ -2362,7 +2472,7 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
         figure.text(layout.reference_text_x_percent / 100, 1 - layout.reference_text_y_percent / 100,
                     layout.reference_text, ha="center", va="center", fontsize=style.legend_pt,
                     color="#263D46")
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "time_frequency":
         from matplotlib.colors import ListedColormap
@@ -2398,23 +2508,23 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
         physical_scale = PREVIEW_WIDTH_IN / (origin_style.page_width_cm / 2.54)
         bar.ax.tick_params(labelsize=15.0 * physical_scale)
         bar.set_label(spec.series[0].label, fontsize=preview.legend_pt)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "flim_phasor":
         figure, axis = _new_figure(preparation)
         _style_axis(axis)
         _draw_flim_phasor_preview(axis, frame, preparation)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "trajectory3d":
         figure = _new_empty_figure(preparation)
         _draw_trajectory3d(figure, frame, preparation)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "density_ridgeline3d":
         figure = _new_empty_figure(preparation)
         _draw_density_ridgeline3d(figure, frame, preparation)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind == "shap_summary":
         figure = _new_empty_figure(preparation)
@@ -2424,7 +2534,7 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
             draw_dashboard_preview(figure, frame, preparation)
         else:
             _draw_shap_composite(figure, frame, preparation)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
     if spec.plot_kind in {"pie", "sankey", "circular_network", "radar", "heatmap"}:
         figure = _new_empty_figure(preparation)
@@ -2438,7 +2548,7 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
             _draw_radar(figure, frame, preparation)
         else:
             _draw_heatmap(figure, frame, preparation)
-        _apply_font_contract(figure)
+        _apply_font_contract(figure, spec.display_plan.figure_style)
         return figure
 
     figure, axis = _new_figure(
@@ -2502,7 +2612,7 @@ def _build_scientific_preview_figure(preparation: ScientificPreparation) -> Figu
         if spec.plot_kind in {"diagnostic_curve", "calibration_curve"}:
             axis.set_aspect("equal", adjustable="box")
         _add_legend(axis, right_axis, preparation)
-    _apply_font_contract(figure)
+    _apply_font_contract(figure, spec.display_plan.figure_style)
     return figure
 
 

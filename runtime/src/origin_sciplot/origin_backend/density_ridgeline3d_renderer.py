@@ -31,10 +31,10 @@ from origin_sciplot.scientific_workflow import ScientificPreparation, prepare_sc
 from origin_sciplot.template_registry import TemplateManifest
 
 from .base_style_contract import pt_to_origin_width_units
-from .export_utils import export_graph
+from .export_utils import export_graph, verify_png_export
 from .safe_errors import OriginDrawError
 from .session import OriginSession
-from .verify_utils import read_layer_geometry_percent, require_nonempty
+from .verify_utils import apply_personal_typography, read_layer_geometry_percent, require_nonempty
 
 PLOTXYZ_TYPE = 240
 GLTRAJECT_TEMPLATE = "glTraject"
@@ -950,6 +950,10 @@ def _build_graph(
         raise OriginDrawError(
             "density_ridgeline3d refuses to overwrite an existing editable OPJU."
         )
+    personal_state = (
+        apply_personal_typography(op, graph, style)
+        if getattr(style, "personal_profile", None) else None
+    )
     if not op.save(str(output.result_opju)):
         raise OriginDrawError("Origin did not save the editable density_ridgeline3d OPJU.")
     require_nonempty(output.result_opju)
@@ -958,6 +962,7 @@ def _build_graph(
         raise OriginDrawError("The density_ridgeline3d provenance copy changed during rendering.")
 
     return graph, {
+        **({"personal_profile": personal_state} if personal_state is not None else {}),
         "route_status": "verified",
         "template_id": "density_ridgeline3d",
         "plan_digest": preparation.plan_digest,
@@ -1050,14 +1055,18 @@ def run_density_ridgeline3d_template(
             raise OriginDrawError("Origin session was not initialized.")
         logger.write(f"Origin connected: version {session.environment.origin_version}")
         graph, verify_report = _build_graph(op, frame, output, resolved)
+        style = resolved.plot_spec.display_plan.figure_style
         exports = export_graph(
             op,
             graph,
             output.result_png,
             output.result_pdf,
             output.result_tif,
+            **({"style": style} if getattr(style, "personal_profile", None) else {}),
             raster_width=2400,
         )
+        if getattr(style, "personal_profile", None):
+            verify_report["personal_profile"]["png"] = verify_png_export(output.result_png, style)
         verify_report["exports"] = exports
         write_json(output.origin_verify_report, verify_report)
         write_json(

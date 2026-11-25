@@ -15,6 +15,7 @@ RUNTIME = PRODUCT_ROOT / "runtime"
 sys.path.insert(0, str(SCRIPTS))
 
 import editaplot as editaplot_cli  # noqa: E402
+import editaplot_core as core_module  # noqa: E402
 from editaplot_core import (  # noqa: E402
     EditaPlotError,
     build_plan,
@@ -238,9 +239,23 @@ def test_worker_command_passes_canonical_tokens_and_expected_report_hash(
     ]
 
 
+@pytest.mark.parametrize("with_personal_profile", [False, True])
 def test_exact_style_precedes_equivalent_reference_fields_and_chains_digests(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_personal_profile: bool,
 ) -> None:
+    local_config = tmp_path / ".editaplot-local.json"
+    monkeypatch.setattr(core_module, "PERSONAL_PROFILE_CONFIG_PATH", local_config)
+    if with_personal_profile:
+        _write_json(local_config, {
+            "engine_home": str(RUNTIME),
+            "personal_profile": {"id": "local", "overrides": {
+                "page_width_cm": 28.8544, "page_height_cm": 20.14728,
+                "font_family": "Arial", "axis_title_size_pt": 28,
+                "tick_label_size_pt": 26, "legend_size_pt": 24,
+                "annotation_size_pt": 24, "bold": True, "png_dpi": 600,
+                "legend_position": "inside",
+            }},
+        })
     image_path = tmp_path / "reference.png"
     Image.new("RGB", (72, 72), "white").save(image_path)
     inspected = inspect_reference(image_path, engine_home=RUNTIME)
@@ -274,8 +289,35 @@ def test_exact_style_precedes_equivalent_reference_fields_and_chains_digests(
     explicit_report = plan["figure_contract"]["visual_style"]["report"]
     reference_report = plan["reference_style"]
     assert explicit_report["output_plan_digest"] == reference_report["input_plan_digest"]
-    assert reference_report["output_plan_digest"] == plan["template"]["plan_digest"]
+    if with_personal_profile:
+        personal = plan["figure_contract"]["personal_profile"]
+        assert "page_width_cm" not in personal["overrides"]
+        assert "page_height_cm" not in personal["overrides"]
+        assert "export_width_in" not in personal["overrides"]
+        assert "export_height_in" not in personal["overrides"]
+        assert personal["overrides"]["legend_position"] == "inside"
+        assert plan["figure_contract"]["visual_style"]["tokens"]["page_size_cm"] == {
+            "width": 18.0, "height": 18.0,
+        }
+        from origin_sciplot.scientific_visual import apply_personal_profile
+        from origin_sciplot.xps_visual_style import apply_xps_visual_style
+        from origin_sciplot.xps_workflow import prepare_xps
+
+        # Replay the same effective defaults on the explicit page request:
+        # the final native page remains 18 cm, not the machine's larger default.
+        prepared = prepare_xps(XPS_SOURCE)
+        explicitly_styled = apply_xps_visual_style(prepared, exact, source="explicit_user")
+        final, _ = apply_personal_profile(explicitly_styled.preparation, {
+            "id": personal["id"], "overrides": personal["overrides"],
+        })
+        assert final.visual_contract.figure_style.page_width_cm == 18.0
+        assert final.visual_contract.figure_style.page_height_cm == 18.0
+        assert reference_report["output_plan_digest"] == personal["report"]["input_plan_digest"]
+        assert personal["report"]["output_plan_digest"] == plan["template"]["plan_digest"]
+    else:
+        assert reference_report["output_plan_digest"] == plan["template"]["plan_digest"]
     assert reference_report["output_plan_digest"] == explicit_report["output_plan_digest"]
+    validate_plan(plan)
 
     rejected = {item["token"]: item for item in reference_report["rejected"]}
     for field in (
@@ -287,6 +329,52 @@ def test_exact_style_precedes_equivalent_reference_fields_and_chains_digests(
         "legend_frame",
     ):
         assert rejected[field]["reason"] == "explicit_user_visual_setting_has_precedence"
+
+
+@pytest.mark.parametrize("aspect_ratio", [None, "adaptive", "square"])
+def test_explicit_xps_legend_and_aspect_precede_equivalent_personal_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, aspect_ratio: str | None,
+) -> None:
+    from origin_sciplot.scientific_visual import apply_personal_profile
+    from origin_sciplot.xps_visual_style import apply_xps_visual_style
+    from origin_sciplot.xps_workflow import prepare_xps
+
+    local_config = tmp_path / ".editaplot-local.json"
+    monkeypatch.setattr(core_module, "PERSONAL_PROFILE_CONFIG_PATH", local_config)
+    _write_json(local_config, {
+        "engine_home": str(RUNTIME),
+        "personal_profile": {"id": "local", "overrides": {
+            "page_width_cm": 28.8544, "page_height_cm": 20.14728,
+            "legend_position": "inside", "png_dpi": 600,
+        }},
+    })
+    exact = {"legend_position": "outside_right"}
+    if aspect_ratio is not None:
+        exact["aspect_ratio_class"] = aspect_ratio
+    plan = build_plan(
+        XPS_SOURCE, template_id="xps", claim="Compare fitted XPS components.",
+        evidence_role="fit decomposition",
+        visual_style=exact,
+        semantic_confirmation=_semantic_confirmation(XPS_SOURCE, "xps"),
+        engine_home=RUNTIME,
+    )
+    personal = plan["figure_contract"]["personal_profile"]
+    expected_defaults = {"png_dpi": 600}
+    if aspect_ratio != "square":
+        expected_defaults.update(page_width_cm=28.8544, page_height_cm=20.14728)
+    assert personal["overrides"] == expected_defaults
+    assert plan["figure_contract"]["visual_style"]["tokens"]["legend_position"] == "outside_right"
+    explicit = apply_xps_visual_style(prepare_xps(XPS_SOURCE), exact, source="explicit_user")
+    final, report = apply_personal_profile(explicit.preparation, {
+        "id": personal["id"], "overrides": personal["overrides"],
+    })
+    assert final.visual_contract.legend_position == "outside_right"
+    expected_page = (19.0, 19.0) if aspect_ratio == "square" else (28.8544, 20.14728)
+    assert final.visual_contract.figure_style.page_width_cm == expected_page[0]
+    assert final.visual_contract.figure_style.page_height_cm == expected_page[1]
+    assert report == personal["report"]
+    assert final.plan_digest == plan["template"]["plan_digest"]
+    validate_plan(plan)
 
 
 @pytest.mark.parametrize(

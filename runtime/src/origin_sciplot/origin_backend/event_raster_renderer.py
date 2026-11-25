@@ -95,6 +95,13 @@ def _validate_event_layout(preparation: ScientificPreparation):
     expected = build_event_raster_layout(
         plan, spec.x_title, spec.y_title, palette_name=spec.display_plan.figure_style.palette_name
     )
+    if spec.display_plan.figure_style.personal_profile:
+        from dataclasses import replace
+
+        from ..scientific_visual import personal_style
+        expected = replace(expected, style=personal_style(
+            expected.style, spec.display_plan.figure_style.personal_profile,
+        ))
     if (
         layout != expected
         or spec.display_plan.figure_style != layout.style

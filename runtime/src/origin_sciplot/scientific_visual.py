@@ -8,10 +8,13 @@ single physical size inherited from one teaching task.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import unicodedata
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass, replace
+from typing import Any
 
 from .circular_network_layout import NETWORK_NODE_GROUP_COLORS
 from .palette_catalog import list_palettes
@@ -232,9 +235,229 @@ class AdaptiveOriginStyle:
     inset_axis_title_size_pt: float = 15.0
     inset_tick_label_size_pt: float = 13.0
     inset_frame_line_width_pt: float = 1.3
+    personal_profile: dict[str, Any] | None = None
 
-    def to_dict(self) -> dict[str, float | int | str]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, Any]:
+        result = asdict(self)
+        if self.personal_profile is None:
+            result.pop("personal_profile")
+        return result
+
+
+PERSONAL_BAR_STYLE_KEYS = frozenset({
+    "bar_border", "bar_fill", "bar_fill_transparency_percent",
+})
+PERSONAL_BAR_TEMPLATES = frozenset({"bar", "horizontal_bar", "stacked_bar", "percent_stacked_bar"})
+PERSONAL_AXIS_STYLE_KEYS = frozenset({
+    "frame_line_width_pt", "major_tick_length_pt", "axis_color", "tick_direction",
+    "numeric_minor_ticks", "tick_details", "axis_frame",
+})
+# Ordinary Cartesian plots share this axis contract. Specialized axes retain
+# their own scientific layout (e.g. raster lanes, polar plots, heatmap cells).
+PERSONAL_AXIS_TEMPLATES = PERSONAL_BAR_TEMPLATES | frozenset({
+    "trend", "line_error", "scatter", "xrd", "xas", "pl", "ftir", "uv_vis", "dsc",
+    "nmr", "cv", "lsv", "eis", "calibration_curve", "diagnostic_curve", "decision_curve",
+    "paired_trajectory", "raw_summary", "violin", "raincloud", "histogram", "grouped_box", "bubble",
+})
+PERSONAL_STYLE_KEYS = frozenset({
+    "page_width_cm", "page_height_cm", "font_family", "axis_title_size_pt",
+    "tick_label_size_pt", "legend_size_pt", "annotation_size_pt", "bold", "png_dpi", "legend_position",
+}) | PERSONAL_BAR_STYLE_KEYS | PERSONAL_AXIS_STYLE_KEYS
+
+
+class PersonalProfileError(ValueError):
+    code = "personal_profile_invalid"
+
+
+def personal_profile_hash(payload: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(
+        dict(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def normalize_personal_profile(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate only explicit overrides; never fill unspecified template fields."""
+    if not isinstance(payload, Mapping) or set(payload) != {"id", "overrides"}:
+        raise PersonalProfileError("A personal profile requires id and overrides only.")
+    identifier, raw = payload["id"], payload["overrides"]
+    if not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 120:
+        raise PersonalProfileError("A personal profile needs a non-empty id.")
+    if not isinstance(raw, Mapping) or set(raw) - PERSONAL_STYLE_KEYS:
+        raise PersonalProfileError("The personal profile contains unsupported override fields.")
+    overrides: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key in {"axis_color", "tick_direction", "tick_details", "axis_frame"}:
+            allowed = {"axis_color": ("#000000",), "tick_direction": ("out", "in"),
+                       "tick_details": ("auto",), "axis_frame": ("four_sides",)}[key]
+            if value not in allowed:
+                raise PersonalProfileError(f"{key} must be one of {allowed}.")
+            overrides[key] = value
+        elif key in {"bar_border", "bar_fill"}:
+            allowed = ("none", "template") if key == "bar_border" else ("two_color_center", "template")
+            if value not in allowed:
+                raise PersonalProfileError(f"{key} must be one of {allowed}.")
+            overrides[key] = value
+        elif key == "legend_position":
+            if value not in ("inside", "template"):
+                raise PersonalProfileError("legend_position must be inside or template.")
+            overrides[key] = value
+        elif key == "font_family":
+            if not isinstance(value, str) or not value.strip() or any(c in value for c in '\r\n;()"'):
+                raise PersonalProfileError("font_family must be a plain installed font name.")
+            overrides[key] = value.strip()
+        elif key == "bold":
+            if not isinstance(value, bool):
+                raise PersonalProfileError("bold must be a boolean.")
+            overrides[key] = value
+        else:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise PersonalProfileError(f"{key} must be a finite number.")
+            limits = (0.1, 100) if key.startswith("page_") else (1, 144)
+            if key == "bar_fill_transparency_percent":
+                limits = (0, 100)
+            if key in {"frame_line_width_pt", "major_tick_length_pt"}:
+                limits = (0.1, 30)
+            if key == "numeric_minor_ticks":
+                limits = (0, 20)
+                if int(value) != value:
+                    raise PersonalProfileError("numeric_minor_ticks must be an integer.")
+            if key == "png_dpi":
+                limits = (72, 2400)
+                if int(value) != value:
+                    raise PersonalProfileError("png_dpi must be an integer.")
+            if not limits[0] <= value <= limits[1]:
+                raise PersonalProfileError(f"{key} must be between {limits[0]} and {limits[1]}.")
+            overrides[key] = int(value) if key == "png_dpi" else float(value)
+    return {"id": identifier.strip(), "overrides": dict(sorted(overrides.items()))}
+
+
+def personal_style(style: AdaptiveOriginStyle, profile: Mapping[str, Any]) -> AdaptiveOriginStyle:
+    """Apply native page dimensions and typography, retaining layer percentages."""
+    canonical = normalize_personal_profile(profile)
+    changes = {k: v for k, v in canonical["overrides"].items()
+               if k not in {"bold", "annotation_size_pt", "png_dpi", "legend_position"}
+               and k not in PERSONAL_BAR_STYLE_KEYS and k not in PERSONAL_AXIS_STYLE_KEYS}
+    if personal_axes_supported(style):
+        changes.update({k: canonical["overrides"][k] for k in ("frame_line_width_pt", "major_tick_length_pt")
+                        if k in canonical["overrides"]})
+    return replace(style, **changes, personal_profile=canonical)
+
+
+def personal_axes_supported(style: AdaptiveOriginStyle) -> bool:
+    name = getattr(style, "profile_name", "")
+    return name.startswith("xps_") or any(name.startswith(f"adaptive-{t}-") for t in PERSONAL_AXIS_TEMPLATES)
+
+
+def personal_axis_style(style: AdaptiveOriginStyle) -> dict[str, Any]:
+    profile = getattr(style, "personal_profile", None)
+    if not profile or not personal_axes_supported(style):
+        return {}
+    return {k: v for k, v in profile["overrides"].items() if k in PERSONAL_AXIS_STYLE_KEYS}
+
+
+def personal_bar_style(style: AdaptiveOriginStyle) -> dict[str, Any]:
+    """Read only the bar-specific overrides; callers are column renderers."""
+    profile = style.personal_profile
+    if not profile or not (PERSONAL_BAR_STYLE_KEYS & profile["overrides"].keys()):
+        return {}
+    if not any(
+        style.profile_name.startswith(f"adaptive-{template}-") for template in PERSONAL_BAR_TEMPLATES
+    ):
+        return {}
+    return {key: value for key, value in profile["overrides"].items()
+            if key in PERSONAL_BAR_STYLE_KEYS and value != "template"}
+
+
+def column_highlight_color(color: str) -> str:
+    """Keep the template hue, mixing 70% white for the central highlight."""
+    rgb = tuple(int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    return "#" + "".join(f"{round(channel + (255 - channel) * 0.70):02X}" for channel in rgb)
+
+
+def apply_personal_profile(preparation: Any, profile: Mapping[str, Any]) -> tuple[Any, dict[str, Any]]:
+    """Use the existing immutable preparation and digest replacement routes."""
+    canonical = normalize_personal_profile(profile)
+    before = preparation.plan_digest
+    if hasattr(preparation, "visual_contract"):
+        from .xps_workflow import replace_xps_visual_contract
+
+        contract = preparation.visual_contract
+        if canonical["overrides"].get("legend_position") == "inside":
+            contract = replace(contract, legend_position="inside")
+        updated = replace_xps_visual_contract(preparation, replace(
+            contract, figure_style=personal_style(contract.figure_style, canonical),
+        ))
+    else:
+        from .scientific_workflow import _legend_label_length, _scientific_plan_digest
+
+        spec = preparation.plot_spec
+        if spec.display_plan.figure_style is None:
+            raise PersonalProfileError("The selected template has no existing style to customize.")
+        base_style = spec.display_plan.figure_style
+        if (canonical["overrides"].get("legend_position") == "inside"
+                and base_style.profile_name.endswith("-external-legend")
+                and spec.plot_kind in {"bar_error", "line", "stacked_line", "line_error",
+                                       "scatter", "diagnostic_curve", "decision_curve"}):
+            inside = resolve_adaptive_style(
+                template_id=preparation.template_id, plot_kind=spec.plot_kind,
+                row_count=preparation.row_count, series_count=len(spec.series),
+                max_legend_label_length=_legend_label_length(spec.series),
+                category_rotation_deg=spec.display_plan.category_label_rotation_deg,
+                legend_position="inside",
+            )
+            # Reuse the resolver's original plot field; only remove its added
+            # exterior legend column. Preserve all data, marks and other styles.
+            base_style = replace(base_style, **{key: getattr(inside, key) for key in (
+                "profile_name", "page_width_cm", "layer_left_percent", "layer_width_percent",
+            )})
+        style = personal_style(base_style, canonical)
+        if (preparation.template_id in PERSONAL_BAR_TEMPLATES
+                and "bar_fill_transparency_percent" in canonical["overrides"]):
+            style = replace(
+                style, fill_transparency_percent=canonical["overrides"]["bar_fill_transparency_percent"],
+            )
+        updated_spec = replace(spec, display_plan=replace(spec.display_plan, figure_style=style))
+        if spec.event_raster_layout is not None:
+            updated_spec = replace(
+                updated_spec, event_raster_layout=replace(spec.event_raster_layout, style=style)
+            )
+        if (spec.signal_stack_layout is not None
+                and {"page_width_cm", "page_height_cm"} & canonical["overrides"].keys()):
+            from .signal_stack_layout import build_signal_stack_layout
+
+            updated_spec = replace(updated_spec, signal_stack_layout=build_signal_stack_layout(
+                spec.signal_stack_plan, style,
+                y_range=(spec.axis_plan.y_from, spec.axis_plan.y_to),
+            ))
+        if spec.heatmap_layout is not None and "tick_label_size_pt" in canonical["overrides"]:
+            # Heatmap row labels are already frozen here; category_order may be
+            # empty and sparse display labels must not be treated as missing rows.
+            updated_spec = replace(updated_spec, heatmap_layout=replace(
+                spec.heatmap_layout,
+                cell_label_size_pt=float(round(style.tick_label_size_pt * 0.76)),
+                colorbar_label_size_pt=float(max(15, round(style.tick_label_size_pt * 0.88))),
+            ))
+        updated = replace(preparation, plot_spec=updated_spec,
+                          plan_digest=_scientific_plan_digest(preparation, updated_spec))
+    report = {
+        **canonical, "applied_fields": sorted(canonical["overrides"]),
+        "input_plan_digest": before, "output_plan_digest": updated.plan_digest,
+    }
+    bar_fields = PERSONAL_BAR_STYLE_KEYS & canonical["overrides"].keys()
+    if bar_fields and preparation.template_id not in PERSONAL_BAR_TEMPLATES:
+        report["applied_fields"] = sorted(canonical["overrides"].keys() - bar_fields)
+        report["not_applicable_fields"] = sorted(bar_fields)
+    final_style = (
+        updated.visual_contract.figure_style
+        if hasattr(updated, "visual_contract")
+        else updated.plot_spec.display_plan.figure_style
+    )
+    axis_fields = PERSONAL_AXIS_STYLE_KEYS & canonical["overrides"].keys()
+    if axis_fields and not personal_axes_supported(final_style):
+        report["applied_fields"] = sorted(set(report["applied_fields"]) - axis_fields)
+        report["not_applicable_fields"] = sorted(set(report.get("not_applicable_fields", [])) | axis_fields)
+    report["report_hash"] = personal_profile_hash(report)
+    return updated, report
 
 
 def palette_colors(name: str) -> tuple[str, ...]:
@@ -384,6 +607,7 @@ def resolve_adaptive_style(
     max_legend_label_length: int | None = None,
     category_rotation_deg: float = 0.0,
     signed_values: bool = False,
+    legend_position: str = "auto",
 ) -> AdaptiveOriginStyle:
     """Resolve a readable physical page without locking every chart to one size."""
 
@@ -413,14 +637,17 @@ def resolve_adaptive_style(
         height = 16.5 if rows <= 6 else 18.0
         label_width_cm = width * 0.16
         data_width_cm = width * 0.80
-        legend_width_cm = max(8.5, min(16.0, 2.5 + legend_label_len * 0.30))
-        width = label_width_cm + data_width_cm + legend_width_cm
-        left = label_width_cm / width * 100.0
-        layer_width_override = data_width_cm / width * 100.0
+        if legend_position == "inside":
+            left, layer_width_override = 16.0, 80.0
+        else:
+            legend_width_cm = max(8.5, min(16.0, 2.5 + legend_label_len * 0.30))
+            width = label_width_cm + data_width_cm + legend_width_cm
+            left = label_width_cm / width * 100.0
+            layer_width_override = data_width_cm / width * 100.0
         palette = "publication_comparison"
         transparency = 6.0
         frame = 1.3
-        categorical_external_legend = True
+        categorical_external_legend = legend_position != "inside"
     elif plot_kind == "horizontal_bar":
         # Allocate physical regions, not a growing percentage of a growing
         # page. The plot field and typography stay readable for long labels.
@@ -732,13 +959,15 @@ def resolve_adaptive_style(
         # Add a real page column, preserving the physical plot field rather
         # than squeezing the data or shrinking the typography. Native text
         # bounds are checked again by the renderer before accepting the plot.
-        original_width = width
-        width += max(6.5, min(16.0, 2.5 + legend_label_len * 0.30))
-        left *= original_width / width
-        layer_width *= original_width / width
+        if legend_position != "inside":
+            original_width = width
+            width += max(6.5, min(16.0, 2.5 + legend_label_len * 0.30))
+            left *= original_width / width
+            layer_width *= original_width / width
         palette = "publication_signal"
         line = 2.2
         frame = 1.3
+        external_legend = legend_position != "inside"
     return AdaptiveOriginStyle(
         profile_name=f"adaptive-{template_id}-{plot_kind}" + (
             "-external-legend" if external_legend or categorical_external_legend else ""

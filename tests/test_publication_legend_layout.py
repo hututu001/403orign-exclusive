@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime/src"))
 
 from origin_sciplot.origin_backend.safe_errors import OriginDrawError  # noqa: E402
-from origin_sciplot.origin_backend.scientific_renderer import _position_publication_legend  # noqa: E402
+from origin_sciplot.origin_backend.scientific_renderer import (  # noqa: E402
+    _position_publication_legend,
+    _position_rotated_category_title,
+)
 from origin_sciplot.scientific_visual import resolve_adaptive_style  # noqa: E402
 
 
@@ -97,3 +101,99 @@ def test_native_legend_bounds_are_checked_without_shrinking(legend_width, valid)
         assert readback["legend.outside_data_field"]
         assert readback["legend.attach"] == 1
         assert readback["legend.width"] == legend_width
+
+
+def test_repositioning_preserves_an_explicitly_requested_legend_frame():
+    style = resolve_adaptive_style(template_id="trend", plot_kind="line", row_count=10, series_count=1)
+    values = {"width": 140, "height": 100, "showframe": 1, "top": -50, "left": 1200}
+    label = SimpleNamespace(set_int=values.__setitem__, set_float=values.__setitem__,
+                            get_int=values.__getitem__, get_float=values.__getitem__)
+    op = SimpleNamespace(lt_float=lambda key: 1000 if key == "page.width" else 700)
+    layer = SimpleNamespace(obj=SimpleNamespace(LT_execute=lambda command: True))
+    result = _position_publication_legend(op, layer, label, style, expected_frame=1)
+    assert result["legend.showframe"] == 1
+    assert values["showframe"] == 1
+    with pytest.raises(OriginDrawError):
+        _position_publication_legend(op, layer, label, style)
+
+
+def test_profile_rotated_title_centers_on_its_frozen_data_layer():
+    style = resolve_adaptive_style(template_id="bar", plot_kind="bar_error", row_count=5, series_count=2)
+    values = {"width": 120}
+    label = SimpleNamespace(set_int=values.__setitem__, set_float=values.__setitem__,
+                            get_float=values.__getitem__)
+    op = SimpleNamespace(lt_float=lambda key: 1000 if key == "page.width" else 700,
+                         lt_exec=lambda _command: True)
+    _position_rotated_category_title(op, label, style)
+    assert values["left"] + 60 == pytest.approx(
+        1000 * (style.layer_left_percent + style.layer_width_percent / 2) / 100
+    )
+    assert values["top"] == 630
+    _position_rotated_category_title(op, label)
+    assert values["left"] + 60 == pytest.approx(610.05)
+
+
+@pytest.mark.parametrize("profile,external", [(True, True), (False, True), (True, False)])
+def test_native_wrap_is_only_used_for_profile_external_legends(profile, external):
+    style = resolve_adaptive_style(
+        template_id="trend", plot_kind="line", row_count=10, series_count=3 if external else 1,
+    )
+    style = replace(style, legend_size_pt=24, personal_profile=(
+        {"id": "n4-f-u-v1.2", "overrides": {"legend_size_pt": 24}} if profile else None
+    ))
+    before = asdict(style)
+    page = {"page.width": 1000, "page.height": 700}
+    page_before = dict(page)
+    values = {"width": 1100, "height": 100, "showframe": 0, "fsize": 24, "font": 71}
+    writes = []
+
+    def set_property(key, value):
+        writes.append((key, value))
+        values[key] = value
+        if key == "wrapwidth":
+            assert values["wrap"] == 1
+            values["width"] = value
+            values["height"] = 240
+
+    def refresh(command):
+        assert command == "doc -uw;"  # No page/layer geometry commands.
+        return True
+
+    label = SimpleNamespace(set_int=set_property, set_float=set_property,
+                            get_int=values.__getitem__, get_float=values.__getitem__)
+    op = SimpleNamespace(lt_float=page.__getitem__)
+    layer = SimpleNamespace(obj=SimpleNamespace(LT_execute=refresh))
+    if profile and external:
+        result = _position_publication_legend(op, layer, label, style)
+        assert values["wrapwidth"] == pytest.approx(990 - values["left"])
+        assert result["legend.width"] == values["wrapwidth"]
+        assert result["legend.height"] == 240
+        assert result["legend.outside_data_field"] is True
+    else:
+        with pytest.raises(OriginDrawError, match="does not fit"):
+            _position_publication_legend(op, layer, label, style)
+        assert not any(key in {"wrap", "wrapwidth"} for key, _ in writes)
+    assert values["fsize"] == 24 and values["font"] == 71
+    assert not any(key in {"fsize", "font"} for key, _ in writes)
+    assert asdict(style) == before
+    assert page == page_before
+
+
+def test_wrapping_still_rejects_a_legend_taller_than_the_native_page():
+    style = replace(resolve_adaptive_style(
+        template_id="trend", plot_kind="line", row_count=10, series_count=3,
+    ), personal_profile={"id": "n4-f-u-v1.2", "overrides": {"legend_size_pt": 24}})
+    values = {"width": 1100, "height": 100, "showframe": 0}
+
+    def set_property(key, value):
+        values[key] = value
+        if key == "wrapwidth":
+            values.update(width=value, height=1000)
+
+    label = SimpleNamespace(set_int=set_property, set_float=set_property,
+                            get_int=values.__getitem__, get_float=values.__getitem__)
+    op = SimpleNamespace(lt_float=lambda key: 1000 if key == "page.width" else 700)
+    layer = SimpleNamespace(obj=SimpleNamespace(LT_execute=lambda _: True))
+    with pytest.raises(OriginDrawError, match="reserved column"):
+        _position_publication_legend(op, layer, label, style)
+    assert values["wrap"] == 1

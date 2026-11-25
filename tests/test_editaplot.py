@@ -2049,10 +2049,12 @@ def test_setup_zero_repair_with_old_environment_hash_rolls_back_immediately(
     assert not bootstrap._install_journal(target).exists()
 
 
+@pytest.mark.parametrize("profile_mode", ["target", "disabled", "source", "other_engine"])
 def test_setup_success_atomically_removes_files_deleted_from_new_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    profile_mode: str,
 ) -> None:
     target = tmp_path / "editaplot"
     scripts = target / "scripts"
@@ -2062,6 +2064,19 @@ def test_setup_success_atomically_removes_files_deleted_from_new_skill(
     (scripts / "bootstrap_editaplot.py").write_text("# old\n", encoding="utf-8")
     legacy = target / "deleted-in-new-version.txt"
     legacy.write_text("stale", encoding="utf-8")
+    personal_profile = {"id": "local-test", "overrides": {"png_dpi": 600}}
+    source_skill = tmp_path / "source-skill"
+    shutil.copytree(SKILL_ROOT, source_skill)
+    monkeypatch.setattr(bootstrap, "SKILL_ROOT", source_skill)
+    source_engine = ENGINE if profile_mode != "other_engine" else tmp_path / "unrelated-engine"
+    (source_skill / ".editaplot-local.json").write_text(json.dumps({
+        "engine_home": str(source_engine), "personal_profile": personal_profile,
+    }), encoding="utf-8")
+    target_engine = ENGINE if profile_mode in {"target", "disabled"} else tmp_path / "old-engine"
+    (target / ".editaplot-local.json").write_text(json.dumps({
+        "engine_home": str(target_engine),
+        "personal_profile": None if profile_mode == "disabled" else personal_profile,
+    }), encoding="utf-8")
     monkeypatch.setattr(bootstrap.platform, "system", lambda: "Windows")
     monkeypatch.setattr(bootstrap, "_resolve_engine", lambda _argv: (ENGINE, {}))
     monkeypatch.setattr(
@@ -2092,6 +2107,13 @@ def test_setup_success_atomically_removes_files_deleted_from_new_skill(
     assert bootstrap.install_skill(["--target", str(target)]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "updated_and_environment_ready"
     assert not legacy.exists()
+    installed_config = json.loads((target / ".editaplot-local.json").read_text(encoding="utf-8"))
+    if profile_mode == "other_engine":
+        assert "personal_profile" not in installed_config
+    else:
+        assert installed_config["personal_profile"] == (
+            None if profile_mode == "disabled" else personal_profile
+        )
     assert not (target / bootstrap.INSTALL_STATE_NAME).exists()
     assert (target / "scripts" / "editaplot.py").read_bytes() == (
         SKILL_ROOT / "scripts" / "editaplot.py"
@@ -2334,8 +2356,8 @@ def test_public_skill_metadata_and_legal_copies_are_self_contained() -> None:
 
     assert metadata["name"] == "editaplot"
     assert "Origin/OriginPro" in metadata["description"]
-    assert "# EditaPlot" in body
-    assert agent["interface"]["display_name"] == "EditaPlot"
+    assert "# 403orign专属 · EditaPlot" in body
+    assert agent["interface"]["display_name"] == "403orign专属 (EditaPlot)"
     default_prompt = agent["interface"]["default_prompt"]
     assert "Origin Automation" in default_prompt
     assert not any(
@@ -2381,6 +2403,7 @@ def test_public_asset_provenance_is_complete_and_synthetic() -> None:
         )
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in {".csv", ".png"}
+        and not any("_EditaPlot_" in part for part in path.relative_to(PRODUCT_ROOT).parts)
     }
 
     assert provenance["asset_count"] == len(records) == len(public_assets)
